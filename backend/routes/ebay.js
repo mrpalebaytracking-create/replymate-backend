@@ -36,7 +36,10 @@ router.get('/callback', async (req, res) => {
     return res.redirect(`${process.env.CUSTOMER_DASHBOARD_URL}/settings?ebay_error=${error}`);
   }
 
+  // eBay developer portal "Test Sign-In" hits here without a license_key in state.
+  // Real users arrive via /ebay/connect?license_key=RM-XXX which sets state=license_key.
   if (!code || !license_key) {
+    console.warn('eBay callback: missing code or license_key — likely a developer portal test, not a real user');
     return res.redirect(`${process.env.CUSTOMER_DASHBOARD_URL}/settings?ebay_error=missing_params`);
   }
 
