@@ -38,6 +38,7 @@ app.use('/usage',    require('./routes/usage'));
 app.use('/admin',    require('./routes/admin'));
 app.use('/customer', require('./routes/customer'));
 app.use('/ebay',     require('./routes/ebay'));
+app.use('/reply',    require('./routes/reply'));
 
 // ── 404 ───────────────────────────────────────────────────────────────────
 app.use((req, res) => {
