@@ -154,7 +154,7 @@ async function callAnthropic(systemPrompt, userMessage) {
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({
-      model: 'claude-3-5-haiku-20241022',
+      model: 'claude-haiku-4-5-20241022',
       max_tokens: 600,
       system: systemPrompt,
       messages: [
@@ -172,7 +172,7 @@ async function callAnthropic(systemPrompt, userMessage) {
 
   return {
     reply: data.content[0].text.trim(),
-    model: 'claude-3-5-haiku-20241022',
+    model: 'claude-haiku-4-5-20241022',
     tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
     cost: parseFloat(cost.toFixed(6))
   };
