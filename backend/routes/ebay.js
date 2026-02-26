@@ -398,5 +398,24 @@ router.get('/token', async (req, res) => {
 
   res.json({ connected: true, token: account.ebay_token, username: account.ebay_username });
 });
+const { getValidEbayTokenByLicenseKey } = require('../lib/ebayAuth');
+
+// ── GET /ebay/verify — confirms token is valid RIGHT NOW ────────────────
+router.get('/verify', async (req, res) => {
+  try {
+    const key = req.headers['x-license-key'] || req.query.license_key;
+    if (!key) return res.status(401).json({ connected: false, reason: 'no_license_key' });
+
+    const result = await getValidEbayTokenByLicenseKey(key);
+    return res.json({
+      connected: result.connected,
+      reason: result.connected ? undefined : result.reason,
+      username: result.ebayUsername || undefined
+    });
+  } catch (err) {
+    console.error('ebay verify error:', err);
+    res.status(500).json({ connected: false, reason: 'server_error' });
+  }
+});
 
 module.exports = router;
