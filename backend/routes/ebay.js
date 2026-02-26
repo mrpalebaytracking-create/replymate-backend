@@ -84,7 +84,8 @@ router.get('/connect', (req, res) => {
       'https://api.ebay.com/oauth/api_scope/sell.fulfillment',
       'https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly',
       'https://api.ebay.com/oauth/api_scope/sell.marketing.readonly',
-      'https://api.ebay.com/oauth/api_scope/sell.inventory.readonly'
+      'https://api.ebay.com/oauth/api_scope/sell.inventory.readonly',
+      'https://api.ebay.com/oauth/api_scope/commerce.identity.readonly'
     ].join(' '),
     state: license_key
   });
