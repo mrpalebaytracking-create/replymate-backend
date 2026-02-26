@@ -6,6 +6,13 @@ const express = require('express');
 const router = express.Router();
 const fetch = require('node-fetch');
 const supabase = require('../db/supabase');
+const { classifierAgent } = require('../agents/classifierAgent');
+const { dataFetchAgent } = require('../agents/dataFetchAgent');
+const { riskAgent } = require('../agents/riskAgent');
+const { profitProtectionAgent } = require('../agents/profitProtectionAgent');
+const { reasoningAgent } = require('../agents/reasoningAgent');
+const { writerAgent } = require('../agents/writerAgent');
+const { safetyCheckAgent } = require('../agents/safetyCheckAgent');
 
 // ── License key middleware ─────────────────────────────────────────────────
 async function requireLicense(req, res, next) {
