@@ -232,9 +232,19 @@ router.post('/generate', requireLicense, async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const { customer_message, modify_instructions, buyer_name } = req.body;
+const {
+  customer_message,
+  latest_buyer_message,
+  thread_messages,
+  modify_instructions,
+  buyer_name,
+  order_id
+} = req.body;
 
-    if (!customer_message || customer_message.trim().length < 3) {
+const latestBuyerMessage = (latest_buyer_message || customer_message || '').trim();
+const threadMessages = Array.isArray(thread_messages) ? thread_messages : [];
+
+    if (!latestBuyerMessage || latestBuyerMessage.length < 3) {
       return res.status(400).json({ error: 'Customer message is required' });
     }
 
