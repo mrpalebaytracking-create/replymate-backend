@@ -378,26 +378,40 @@ router.post('/search-order', requireLicense, async (req, res) => {
 
 // ── Legacy token endpoint (backward compat) ─────────────────────────────
 router.get('/token', async (req, res) => {
-  const key = req.headers['x-license-key'] || req.query.license_key;
-  if (!key) return res.status(401).json({ error: 'No license key' });
+  try {
+    const key = req.headers['x-license-key'] || req.query.license_key;
+    if (!key) return res.status(401).json({ error: 'No license key' });
 
-  const { data: user } = await supabase.from('users').select('id').eq('license_key', key).single();
-  if (!user) return res.status(401).json({ error: 'Invalid key' });
+    const { data: user } = await supabase
+      .from('users')
+      .select('id')
+      .eq('license_key', key)
+      .single();
 
-  const { data: account } = await supabase
-    .from('ebay_accounts')
-    .select('ebay_token, ebay_username, token_expires_at')
-    .eq('user_id', user.id)
-    .eq('is_primary', true)
-    .single();
+    if (!user) return res.status(401).json({ error: 'Invalid key' });
 
-  if (!account) return res.json({ connected: false });
-  if (account.token_expires_at && new Date() > new Date(account.token_expires_at)) {
-    return res.json({ connected: false, reason: 'token_expired' });
+    // ✅ This helper auto-refreshes if expired
+    const token = await getEbayToken(user.id);
+    if (!token) return res.json({ connected: false, reason: 'no_token_or_refresh_failed' });
+
+    const { data: account } = await supabase
+      .from('ebay_accounts')
+      .select('ebay_username')
+      .eq('user_id', user.id)
+      .eq('is_primary', true)
+      .single();
+
+    res.json({
+      connected: true,
+      token,
+      username: account?.ebay_username || 'eBay Seller'
+    });
+  } catch (err) {
+    console.error('eBay /token error:', err);
+    res.status(500).json({ connected: false, reason: 'server_error' });
   }
-
-  res.json({ connected: true, token: account.ebay_token, username: account.ebay_username });
 });
+
 const { getValidEbayTokenByLicenseKey } = require('../lib/ebayAuth');
 
 // ── GET /ebay/verify — confirms token is valid RIGHT NOW ────────────────
