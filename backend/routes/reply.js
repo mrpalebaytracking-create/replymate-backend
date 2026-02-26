@@ -251,69 +251,70 @@ const threadMessages = Array.isArray(thread_messages) ? thread_messages : [];
     const user = req.user;
 
     // Step 1: Classify intent
-    const { intent, confidence, risk } = classifyIntent(customer_message);
+    // ── AGENT PIPELINE ─────────────────────────────────────────────
 
-    // Step 2: Get tone samples
-    const { data: toneSamples } = await supabase
-      .from('tone_samples')
-      .select('text')
-      .eq('user_id', user.id)
-      .limit(3);
+// 1) Classifier Agent
+const classifier = classifierAgent({
+  latestBuyerMessage,
+  threadMessages
+});
 
-    // Step 3: Route to appropriate AI tier
-    let reply, model, tokens, cost, route;
+// allow order_id from extension to override extraction
+const resolvedOrderId = order_id || classifier.extracted.orderId;
 
-    // Tier 1: Rule-based (free) — for simple, high-confidence intents with low risk
-    if (confidence >= 80 && risk === 'low' && !modify_instructions) {
-      const ruleReply = getRuleBasedReply(intent, user.signature_name || user.name, user.business_name);
-      if (ruleReply) {
-        reply = ruleReply;
-        model = 'rule-based';
-        tokens = 0;
-        cost = 0;
-        route = 'rule';
-      }
-    }
+// 2) Data Fetch Agent (only if needed)
+const dataFetch = await dataFetchAgent({
+  userId: user.id,
+  needs: classifier.needs,
+  orderId: resolvedOrderId
+});
 
-    // Tier 2: GPT-4o-mini — for medium complexity
-    if (!reply && risk !== 'high') {
-      try {
-        const systemPrompt = buildSystemPrompt(user, intent, risk, toneSamples);
-        let userMsg = `Customer message:\n"${customer_message}"`;
-        if (buyer_name) userMsg += `\n\nBuyer name: ${buyer_name}`;
-        if (modify_instructions) userMsg += `\n\nAdditional instructions from seller: ${modify_instructions}`;
+// 3) Risk Agent
+const riskOut = riskAgent({ intent: classifier.intent, risk: classifier.risk });
 
-        const result = await callOpenAI(systemPrompt, userMsg);
-        reply = result.reply;
-        model = result.model;
-        tokens = result.tokens;
-        cost = result.cost;
-        route = 'mini';
-      } catch (err) {
-        console.error('OpenAI failed, falling back to Anthropic:', err.message);
-        // Fall through to Tier 3
-      }
-    }
+// 4) Profit Protection Agent
+const profitOut = profitProtectionAgent({
+  intent: classifier.intent,
+  fetched: dataFetch.fetched
+});
 
-    // Tier 3: Claude Haiku — for high-risk or when GPT fails
-    if (!reply) {
-      try {
-        const systemPrompt = buildSystemPrompt(user, intent, risk, toneSamples);
-        let userMsg = `Customer message:\n"${customer_message}"`;
-        if (buyer_name) userMsg += `\n\nBuyer name: ${buyer_name}`;
-        if (modify_instructions) userMsg += `\n\nAdditional instructions from seller: ${modify_instructions}`;
+// 5) Reasoning Agent (facts + missing info + constraints)
+const reasoning = reasoningAgent({
+  classifier,
+  dataFetch,
+  risk: riskOut,
+  profit: profitOut
+});
 
-        const result = await callAnthropic(systemPrompt, userMsg);
-        reply = result.reply;
-        model = result.model;
-        tokens = result.tokens;
-        cost = result.cost;
-        route = 'large';
-      } catch (err) {
-        console.error('Anthropic also failed:', err.message);
-        return res.status(500).json({ error: 'AI service unavailable. Please try again in a moment.' });
-      }
-    }
+// 6) Writer Agent (AI)
+let result;
+try {
+  result = await writerAgent({
+    user,
+    latestBuyerMessage,
+    threadMessages,
+    reasoning,
+    riskLevel: classifier.risk
+  });
+} catch (err) {
+  console.error('Writer agent failed:', err.message);
+  return res.status(500).json({ error: 'AI service unavailable. Please try again.' });
+}
+
+// 7) Safety Check Agent (final pass)
+const safe = safetyCheckAgent({ draft: result.reply });
+
+const reply = safe.reply;
+const model = result.model;
+const tokens = result.tokens;
+const cost = result.cost;
+
+// Determine route label (for your usage counters)
+const route = model === 'gpt-4o-mini' ? 'mini' : model.startsWith('claude') ? 'large' : 'rule';
+
+// return intent/risk from classifier
+const intent = classifier.intent;
+const risk = classifier.risk;
 
     const latency = Date.now() - startTime;
 
