@@ -357,7 +357,7 @@ const risk = classifier.risk;
       intent,
       route,
       model,
-      customer_message: customer_message.slice(0, 2000),
+      customer_message: latestBuyerMessage.slice(0, 2000),
       generated_reply: reply.slice(0, 2000),
       modify_instructions: modify_instructions || null,
       latency_ms: latency,
