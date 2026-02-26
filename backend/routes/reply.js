@@ -370,14 +370,18 @@ const risk = classifier.risk;
     await supabase.from('users').update({ last_active: new Date().toISOString() }).eq('id', user.id);
 
     // Step 5: Return reply
-    res.json({
-      success: true,
-      reply,
-      intent,
-      risk,
-      route,
-      latency_ms: latency
-    });
+    const debug = req.query.debug === '1';
+
+res.json({
+  success: true,
+  reply,
+  intent,
+  risk,
+  route,
+  latency_ms: latency,
+  ...(debug ? { agents: { classifier, dataFetch, riskOut, profitOut, reasoning } } : {})
+});
+
 
   } catch (err) {
     console.error('Reply generation error:', err);
