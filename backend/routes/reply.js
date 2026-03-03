@@ -320,18 +320,23 @@ const reasoning = reasoningAgent({
 });
 
 // 5b) Load seller preferences and inject into reasoning constraints
-// Fetch preferences relevant to this intent (or global ones)
-const { data: prefRows } = await supabase
-  .from('seller_preferences')
-  .select('insight, applies_to_intent, times_seen')
-  .eq('user_id', user.id)
-  .or(`applies_to_intent.eq.${intent},applies_to_intent.is.null`)
-  .order('times_seen', { ascending: false })
-  .limit(6);
+// Wrapped in try/catch — if this fails for ANY reason, generate continues normally
+try {
+  const { data: prefRows } = await supabase
+    .from('seller_preferences')
+    .select('insight, applies_to_intent, times_seen')
+    .eq('user_id', user.id)
+    .or(`applies_to_intent.eq.${classifier.intent},applies_to_intent.is.null`)
+    .order('times_seen', { ascending: false })
+    .limit(6);
 
-if (prefRows && prefRows.length > 0) {
-  const prefLines = prefRows.map(p => p.insight);
-  reasoning.constraints = [...(reasoning.constraints || []), ...prefLines];
+  if (prefRows && prefRows.length > 0) {
+    const prefLines = prefRows.map(p => p.insight);
+    reasoning.constraints = [...(reasoning.constraints || []), ...prefLines];
+  }
+} catch (prefErr) {
+  // Non-fatal — preferences are a nice-to-have, not required for generation
+  console.warn('Could not load seller preferences (non-fatal):', prefErr.message);
 }
 
 // ── Rule-based short-circuit (Junior Agent) ─────────────────────────────
