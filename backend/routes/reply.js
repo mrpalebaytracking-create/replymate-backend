@@ -48,68 +48,7 @@ async function requireLicense(req, res, next) {
   next();
 }
 
-// ── Intent classification ──────────────────────────────────────────────────
-function classifyIntent(message) {
-  const msg = message.toLowerCase();
 
-  const patterns = {
-    tracking:         [/track/i, /where.*(order|package|item|shipment)/i, /shipping status/i, /when.*(arrive|deliver|ship|get)/i, /hasn.t (arrived|shipped)/i, /not received/i, /delivery date/i],
-    return:           [/return/i, /send.*(back|it back)/i, /want.*refund/i, /return (policy|label|request)/i, /exchange/i],
-    refund:           [/refund/i, /money back/i, /charge.*back/i, /full refund/i, /partial refund/i, /reimburse/i],
-    damaged_item:     [/damaged/i, /broken/i, /cracked/i, /dent/i, /scratch/i, /defective/i, /not working/i, /doesn.t work/i, /faulty/i, /arrived broken/i],
-    shipping_inquiry: [/shipping (cost|time|method|option)/i, /how long.*(ship|deliver)/i, /expedit/i, /express ship/i, /free shipping/i, /international ship/i],
-    item_question:    [/compatible/i, /does (it|this) (work|fit|come)/i, /what.*(size|color|dimension|weight|material)/i, /is (it|this) (new|genuine|authentic|original)/i, /specs/i, /specification/i],
-    discount_request: [/discount/i, /lower price/i, /best price/i, /bulk/i, /deal/i, /coupon/i, /offer/i, /negotiate/i],
-    cancellation:     [/cancel/i, /don.t want/i, /changed my mind/i, /stop.*order/i],
-    positive_feedback:[/thank/i, /great (seller|service|product|item)/i, /love (it|this)/i, /perfect/i, /excellent/i, /amazing/i, /happy with/i, /well packed/i, /fast ship/i],
-    legal_threat:     [/lawyer/i, /attorney/i, /legal action/i, /sue you/i, /court/i, /trading standards/i, /consumer rights/i, /report you/i, /bbb/i, /complaint/i],
-    fraud_claim:      [/scam/i, /fraud/i, /fake/i, /counterfeit/i, /not (genuine|authentic|real)/i, /knock.?off/i, /replica/i],
-    off_platform:     [/whatsapp/i, /paypal.*direct/i, /call me/i, /text me/i, /email.*direct/i, /outside.*ebay/i, /off.*ebay/i, /my.*number/i, /phone/i]
-  };
-
-  let bestIntent = 'general';
-  let bestScore = 0;
-
-  for (const [intent, regexes] of Object.entries(patterns)) {
-    let score = 0;
-    for (const regex of regexes) {
-      if (regex.test(msg)) score++;
-    }
-    if (score > bestScore) {
-      bestScore = score;
-      bestIntent = intent;
-    }
-  }
-
-  // Risk level: high for legal/fraud/off-platform
-  const highRisk = ['legal_threat', 'fraud_claim', 'off_platform'].includes(bestIntent);
-  const mediumRisk = ['return', 'refund', 'damaged_item', 'cancellation'].includes(bestIntent);
-
-  return {
-    intent: bestIntent,
-    confidence: Math.min(bestScore * 30 + 20, 95),
-    risk: highRisk ? 'high' : mediumRisk ? 'medium' : 'low'
-  };
-}
-
-// ── Rule-based templates (free, instant, $0 cost) ──────────────────────────
-function getRuleBasedReply(intent, sellerName, businessName) {
-  const sign = sellerName || businessName || 'The Seller';
-
-  const templates = {
-    tracking: `Hi there,\n\nThank you for your message. Your order has been dispatched and is on its way to you. You can find your tracking information in your eBay purchase history or notifications — please allow up to 24 hours for tracking to become active after shipping.\n\nIf you have any other questions, please don't hesitate to ask.\n\nBest regards,\n${sign}`,
-
-    positive_feedback: `Hi,\n\nThank you so much for the kind words — that really means a lot! I'm glad you're happy with your purchase. If you ever need anything in the future, don't hesitate to reach out.\n\nWishing you all the best,\n${sign}`,
-
-    shipping_inquiry: `Hi there,\n\nThank you for your interest! Shipping details including estimated delivery times and costs are listed on each item's listing page. Standard shipping typically takes 3-5 business days domestically.\n\nIf you have any specific questions about shipping to your location, I'm happy to help.\n\nBest regards,\n${sign}`,
-
-    item_question: `Hi,\n\nThank you for your question! All product details, specifications, and compatibility information are listed in the item description. I'd recommend checking there first.\n\nIf you need any clarification or have specific questions not covered in the listing, please let me know and I'll be happy to help.\n\nBest regards,\n${sign}`,
-
-    off_platform: `Hi,\n\nThank you for your message. For the protection of both buyers and sellers, I handle all communication and transactions through eBay's official messaging and checkout system.\n\nPlease feel free to continue our conversation here — I'm happy to help with anything you need.\n\nBest regards,\n${sign}`
-  };
-
-  return templates[intent] || null;
-}
 
 // ── Call OpenAI GPT-4o-mini ────────────────────────────────────────────────
 async function callOpenAI(systemPrompt, userMessage) {
@@ -161,7 +100,7 @@ async function callAnthropic(systemPrompt, userMessage) {
       'anthropic-version': '2023-06-01'
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20241022',
+      model: 'claude-3-5-haiku-20241022',
       max_tokens: 600,
       system: systemPrompt,
       messages: [
@@ -174,58 +113,17 @@ async function callAnthropic(systemPrompt, userMessage) {
   if (data.error) throw new Error(data.error.message || 'Anthropic API error');
 
   const usage = data.usage || {};
-  // Claude Haiku pricing: $0.80/1M input, $4.00/1M output
+  // Claude 3.5 Haiku pricing: $0.80/1M input, $4.00/1M output
   const cost = ((usage.input_tokens || 0) * 0.0000008) + ((usage.output_tokens || 0) * 0.000004);
 
   return {
     reply: data.content[0].text.trim(),
-    model: 'claude-haiku-4-5-20241022',
+    model: 'claude-3-5-haiku-20241022',
     tokens: (usage.input_tokens || 0) + (usage.output_tokens || 0),
     cost: parseFloat(cost.toFixed(6))
   };
 }
 
-// ── Build system prompt ────────────────────────────────────────────────────
-function buildSystemPrompt(user, intent, risk, toneSamples) {
-  let prompt = `You are an expert eBay customer service assistant. You write replies on behalf of an eBay seller.
-
-SELLER INFO:
-- Business name: ${user.business_name || 'eBay Store'}
-- Seller name: ${user.signature_name || user.name || 'The Seller'}
-- Preferred tone: ${user.reply_tone || 'professional'}
-
-RULES:
-- Be ${user.reply_tone || 'professional'}, helpful, and concise
-- Keep replies under 150 words unless the situation is complex
-- Never admit fault or liability — stay neutral and helpful
-- Never suggest communicating outside of eBay
-- Always sign off with the seller's name
-- For tracking questions: remind them to check eBay purchase history
-- For returns: refer to the store's return policy on the listing
-- For damaged items: express concern, ask for photos, offer solutions
-- For legal threats: stay calm, neutral, factual — do NOT admit liability
-- For fraud claims: politely defend product authenticity, offer to help
-- NEVER make up tracking numbers, order details, or product specs
-- If you're unsure about specific order details, ask the buyer to provide them`;
-
-  if (risk === 'high') {
-    prompt += `\n\n⚠️ HIGH RISK MESSAGE DETECTED (${intent}):
-- Be EXTRA careful with your wording
-- Do NOT admit fault or accept liability
-- Stay factual and professional
-- Suggest resolving through eBay's resolution center if needed
-- Do not escalate or be defensive`;
-  }
-
-  if (toneSamples && toneSamples.length > 0) {
-    prompt += `\n\nTONE REFERENCE — Here are examples of how this seller writes. Match their style:\n`;
-    toneSamples.slice(0, 3).forEach((sample, i) => {
-      prompt += `\nExample ${i + 1}:\n${sample.text.slice(0, 500)}\n`;
-    });
-  }
-
-  return prompt;
-}
 
 // ── POST /reply/generate — main reply generation endpoint ──────────────────
 router.post('/generate', requireLicense, async (req, res) => {
