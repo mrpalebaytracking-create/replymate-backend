@@ -295,7 +295,7 @@ const biz  = user.business_name  || 'our store';
 const msgLen = latestBuyerMessage.trim().length;
 
 const juniorTemplates = {
-  positive_feedback: `Hi,\n\nThank you so much — really glad to hear that! It means a lot. If you ever need anything in the future, don't hesitate to get in touch.\n\nBest regards,\n${sign}`,
+  positive_feedback: `You're welcome! If you ever need anything, don't hesitate to reach out.\n\nBest regards,\n${sign}`,
   off_platform:      `Hi,\n\nThank you for your message. For the protection of both parties, I keep all communication and transactions through eBay's official system.\n\nPlease continue here — happy to help with anything you need.\n\nBest regards,\n${sign}`,
   shipping_inquiry:  `Hi,\n\nThank you for your interest! Shipping details and estimated delivery times are listed on each item's page. If you have a specific question about delivery to your location, feel free to ask.\n\nBest regards,\n${sign}`,
   item_question:     `Hi,\n\nThank you for your question! All product details, dimensions, and compatibility information are listed in the item description — I'd recommend checking there first.\n\nIf you can't find what you need, just let me know and I'll be happy to help.\n\nBest regards,\n${sign}`,
