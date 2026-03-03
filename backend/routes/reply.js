@@ -319,6 +319,21 @@ const reasoning = reasoningAgent({
   profit: profitOut
 });
 
+// 5b) Load seller preferences and inject into reasoning constraints
+// Fetch preferences relevant to this intent (or global ones)
+const { data: prefRows } = await supabase
+  .from('seller_preferences')
+  .select('insight, applies_to_intent, times_seen')
+  .eq('user_id', user.id)
+  .or(`applies_to_intent.eq.${intent},applies_to_intent.is.null`)
+  .order('times_seen', { ascending: false })
+  .limit(6);
+
+if (prefRows && prefRows.length > 0) {
+  const prefLines = prefRows.map(p => p.insight);
+  reasoning.constraints = [...(reasoning.constraints || []), ...prefLines];
+}
+
 // ── Rule-based short-circuit (Junior Agent) ─────────────────────────────
 // Fires BEFORE writerAgent for routine, low-risk, short messages.
 // These need no AI — a polished template is faster and just as good.
@@ -460,89 +475,128 @@ res.json({
   }
 });
 
-// ── POST /reply/modify — modify an existing reply (IMPROVED) ───────────────
+// ── POST /reply/modify — full GPT conversation, long-input aware ──────────
 router.post('/modify', requireLicense, async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const { 
-      original_reply, 
-      customer_message, 
-      instructions
+    const {
+      customer_message,
+      conversation_history, // array of {role, content} — the real GPT thread
+      instructions,         // current instruction from seller (can be long)
+      thread_messages       // eBay thread for extra context
     } = req.body;
 
-    if (!original_reply || !instructions) {
-      return res.status(400).json({ error: 'Original reply and instructions required' });
+    if (!instructions || instructions.trim().length < 1) {
+      return res.status(400).json({ error: 'Instructions are required' });
+    }
+    if (!conversation_history || !Array.isArray(conversation_history) || conversation_history.length < 2) {
+      return res.status(400).json({ error: 'Conversation history required' });
     }
 
     const user = req.user;
+    const sign = user.signature_name || user.name || 'The Seller';
+    const biz  = user.business_name  || 'the store';
+    const tone = user.reply_tone     || 'professional';
 
-    // Build a SIMPLE, CLEAR system prompt
-    const systemPrompt = `You are modifying a customer service reply for an eBay seller.
+    // ── System prompt — tells GPT exactly who it is and what it must do ──
+    const systemPrompt = `You are the dedicated reply assistant for ${biz}, an eBay seller. You write customer service replies on behalf of ${sign}.
 
-SELLER: ${user.business_name || 'eBay Store'} (${user.signature_name || 'The Seller'})
+SELLER CONTEXT:
+- Business: ${biz}
+- Signing as: ${sign}
+- Preferred tone: ${tone}
+- Platform: eBay (all communication stays on eBay — never suggest WhatsApp, email, phone, PayPal direct)
 
-YOUR TASK: Follow the seller's modification instructions EXACTLY.
+YOUR ROLE IN THIS CONVERSATION:
+You are being used like ChatGPT. The seller is talking directly to you to refine a reply. You have full memory of every instruction given so far in this session.
 
-RULES:
-1. If they say "just say welcome" → Write ONLY "You're welcome!"
-2. If they say "make it shorter" → Cut the length by 50%
-3. If they say "remove X" → Delete that phrase completely
-4. If they say "add X" → Add it naturally
-5. If they say "nothing else" → Keep it minimal
-6. Always end with seller's name signature
+CRITICAL RULES:
+1. Read the seller's full instruction carefully — even if it is long and detailed. Process every part of it before writing.
+2. Follow the instruction EXACTLY and COMPLETELY. If they say "do X and also Y and make sure Z" — do all three.
+3. If instruction says "shorter" or "just say X" — be minimal. Don't add extra content they didn't ask for.
+4. Never suggest off-eBay communication.
+5. Never admit fault or accept liability unless explicitly instructed.
+6. Always end with: "Best regards,\\n${sign}"
+7. If the seller's instruction is a question or asks for your opinion — answer it conversationally first, then offer to rewrite the reply.
 
-FOLLOW THE INSTRUCTIONS EXACTLY. Don't add extra content.`;
+YOU HAVE FULL CONTEXT of the buyer's message and every previous version of this reply. Build on that context.`;
 
-    const userMsg = `ORIGINAL REPLY:
-"${original_reply}"
+    // ── Build the messages array — this is a real GPT conversation ────────
+    // conversation_history already contains the full thread:
+    // [ {role:'user', content:'Buyer said: ...\n\nWrite a reply.'}, {role:'assistant', content:'...'}, ... ]
+    // We just append the new instruction as the next user turn.
+    const messages = [
+      ...conversation_history,
+      { role: 'user', content: `My instruction: ${instructions.trim()}` }
+    ];
 
-BUYER'S MESSAGE (for context):
-"${customer_message}"
+    // ── Call OpenAI with the full conversation ─────────────────────────────
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error('OpenAI API key not configured');
 
-SELLER'S INSTRUCTION:
-"${instructions}"
-
-Now rewrite the reply following the instruction EXACTLY. 
-
-CRITICAL:
-- If instruction says "just" or "only" → Make it VERY short
-- If instruction says "nothing else" → Keep it minimal
-- Don't add extra politeness unless asked
-- Follow the instruction literally
-
-Write the modified reply now.`;
-
-    let result;
-    try {
-      result = await callOpenAI(systemPrompt, userMsg);
-    } catch {
-      result = await callAnthropic(systemPrompt, userMsg);
-    }
-
-    const latency = Date.now() - startTime;
-
-    // Log the modification
-    await supabase.from('reply_log').insert({
-      user_id: user.id,
-      intent: 'modification',
-      route: 'modify',
-      model: result.model,
-      customer_message: (customer_message || '').slice(0, 2000),
-      generated_reply: result.reply.slice(0, 2000),
-      modify_instructions: instructions.slice(0, 500),
-      latency_ms: latency,
-      tokens_used: result.tokens || 0,
-      cost_usd: result.cost || 0,
-      source: 'extension'
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          ...messages
+        ],
+        max_tokens: 800,    // generous — seller may have asked for a long reply
+        temperature: 0.5    // lower than generate — follow instructions precisely
+      })
     });
 
+    const aiData = await response.json();
+    if (aiData.error) throw new Error(aiData.error.message || 'OpenAI error');
+
+    const modifiedReply = aiData.choices[0].message.content.trim();
+    const usage  = aiData.usage || {};
+    const tokens = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
+    const cost   = ((usage.prompt_tokens || 0) * 0.00000015) + ((usage.completion_tokens || 0) * 0.0000006);
+    const latency = Date.now() - startTime;
+
+    // ── Log the modification ───────────────────────────────────────────────
+    await supabase.from('reply_log').insert({
+      user_id:              user.id,
+      intent:               'modification',
+      route:                'modify',
+      model:                'gpt-4o-mini',
+      customer_message:     (customer_message || '').slice(0, 2000),
+      generated_reply:      modifiedReply.slice(0, 2000),
+      modify_instructions:  instructions.slice(0, 1000),
+      latency_ms:           latency,
+      tokens_used:          tokens,
+      cost_usd:             parseFloat(cost.toFixed(6)),
+      source:               'extension'
+    });
+
+    // ── Fire-and-forget: async preference analysis ─────────────────────────
+    // Non-blocking — seller gets their reply instantly, analysis runs in background
+    analyseAndSavePreference({
+      userId:      user.id,
+      instruction: instructions,
+      reply:       modifiedReply,
+      intent:      req.body.intent || 'general'
+    }).catch(err => console.error('Preference analysis failed silently:', err.message));
+
+    // ── Return ─────────────────────────────────────────────────────────────
     res.json({
-      success: true,
-      reply: result.reply,
-      route: 'modify',
-      model: result.model,
-      latency_ms: latency
+      success:    true,
+      reply:      modifiedReply,
+      route:      'modify',
+      model:      'gpt-4o-mini',
+      latency_ms: latency,
+      // Return the updated history so frontend can continue the conversation
+      updated_history: [
+        ...messages,
+        { role: 'assistant', content: modifiedReply }
+      ]
     });
 
   } catch (err) {
@@ -550,5 +604,106 @@ Write the modified reply now.`;
     res.status(500).json({ error: 'Failed to modify reply. Please try again.' });
   }
 });
+
+
+// ── Async preference analyser (fire-and-forget) ───────────────────────────
+async function analyseAndSavePreference({ userId, instruction, reply, intent }) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return;
+
+  const prompt = `An eBay seller gave this instruction to modify a customer service reply:
+
+INSTRUCTION: "${instruction}"
+
+RESULTING REPLY: "${reply.slice(0, 500)}"
+
+Analyse what this instruction reveals about the seller's preferences or policies. Respond ONLY with a JSON object — no markdown, no explanation:
+
+{
+  "category": "tone|length|content|policy|greeting|closing",
+  "insight": "one clear sentence describing what this seller always wants or never does",
+  "applies_to_intent": "tracking|return|refund|damaged_item|cancellation|positive_feedback|general|null"
+}
+
+Rules:
+- insight must be a generalised pattern, not specific to this one message
+- if the instruction is too vague to extract a meaningful preference, return {"skip": true}
+- applies_to_intent should be null if this preference applies to all message types`;
+
+  const r = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 150,
+      temperature: 0.2
+    })
+  });
+
+  const data = await r.json();
+  if (data.error) return;
+
+  let parsed;
+  try {
+    const text = data.content?.[0]?.text || data.choices?.[0]?.message?.content || '';
+    parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+  } catch { return; }
+
+  if (!parsed || parsed.skip || !parsed.insight || !parsed.category) return;
+
+  // Upsert: if same insight exists for this user, increment times_seen
+  const { data: existing } = await supabase
+    .from('seller_preferences')
+    .select('id, times_seen')
+    .eq('user_id', userId)
+    .eq('insight', parsed.insight)
+    .single();
+
+  if (existing) {
+    await supabase.from('seller_preferences').update({
+      times_seen: existing.times_seen + 1,
+      last_seen:  new Date().toISOString(),
+      source_instruction: instruction.slice(0, 500)
+    }).eq('id', existing.id);
+  } else {
+    await supabase.from('seller_preferences').insert({
+      user_id:            userId,
+      category:           parsed.category,
+      insight:            parsed.insight,
+      applies_to_intent:  parsed.applies_to_intent || null,
+      source_instruction: instruction.slice(0, 500),
+      times_seen:         1
+    });
+  }
+}
+
+
+// ── GET /seller/insights — returns preferences for the popup dashboard ─────
+router.get('/seller/insights', requireLicense, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('seller_preferences')
+      .select('id, category, insight, applies_to_intent, times_seen, last_seen, source_instruction')
+      .eq('user_id', req.user.id)
+      .order('times_seen', { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+
+    // Group by category for the UI
+    const grouped = {};
+    for (const row of (data || [])) {
+      if (!grouped[row.category]) grouped[row.category] = [];
+      grouped[row.category].push(row);
+    }
+
+    res.json({ success: true, total: (data || []).length, grouped });
+  } catch (err) {
+    console.error('Insights fetch error:', err);
+    res.status(500).json({ error: 'Failed to load insights' });
+  }
+});
+
 
 module.exports = router;
