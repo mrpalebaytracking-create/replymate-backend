@@ -389,7 +389,7 @@ res.json({
   }
 });
 
-// ── POST /reply/modify — modify an existing reply ──────────────────────────
+// ── POST /reply/modify — modify an existing reply (IMPROVED) ───────────────
 router.post('/modify', requireLicense, async (req, res) => {
   const startTime = Date.now();
 
@@ -397,74 +397,50 @@ router.post('/modify', requireLicense, async (req, res) => {
     const { 
       original_reply, 
       customer_message, 
-      instructions,
-      buyer_name,
-      order_id,
-      product_title,
-      thread_messages,
-      modification_history
+      instructions
     } = req.body;
 
     if (!original_reply || !instructions) {
-      return res.status(400).json({ error: 'Original reply and instructions are required' });
+      return res.status(400).json({ error: 'Original reply and instructions required' });
     }
 
     const user = req.user;
 
-    // Build rich context for modification
-    const threadText = Array.isArray(thread_messages) && thread_messages.length
-      ? thread_messages.slice(-10).map(m => `${(m.role || 'buyer').toUpperCase()}: ${String(m.text || '').trim()}`).join('\n')
-      : '';
+    // Build a SIMPLE, CLEAR system prompt
+    const systemPrompt = `You are modifying a customer service reply for an eBay seller.
 
-    // Include modification history for context continuity
-    let historyContext = '';
-    if (Array.isArray(modification_history) && modification_history.length > 0) {
-      historyContext = '\n\nPREVIOUS MODIFICATIONS:\n' + 
-        modification_history.slice(-3).map((mod, i) => 
-          `${i + 1}. Instruction: "${mod.instruction}"\n   Result: "${mod.previous_reply.slice(0, 150)}..."`
-        ).join('\n');
-    }
+SELLER: ${user.business_name || 'eBay Store'} (${user.signature_name || 'The Seller'})
 
-    const systemPrompt = `You are an expert eBay customer service assistant. A seller has asked you to modify a draft reply.
+YOUR TASK: Follow the seller's modification instructions EXACTLY.
 
-SELLER INFO:
-- Business name: ${user.business_name || 'eBay Store'}
-- Seller name: ${user.signature_name || user.name || 'The Seller'}
-- Preferred tone: ${user.reply_tone || 'professional'}
+RULES:
+1. If they say "just say welcome" → Write ONLY "You're welcome!"
+2. If they say "make it shorter" → Cut the length by 50%
+3. If they say "remove X" → Delete that phrase completely
+4. If they say "add X" → Add it naturally
+5. If they say "nothing else" → Keep it minimal
+6. Always end with seller's name signature
 
-YOUR TASK:
-Apply the seller's modification instructions to the existing reply while:
-1. Keeping the same general structure and professionalism
-2. Maintaining all factual information (order IDs, tracking, etc.)
-3. Following the seller's exact instructions
-4. Never admitting fault or liability
-5. Never suggesting off-eBay communication
-6. Keeping it concise unless asked to expand
+FOLLOW THE INSTRUCTIONS EXACTLY. Don't add extra content.`;
 
-IMPORTANT:
-- This may be one of several modifications - consider the conversation history
-- The seller knows their customer best - trust their judgment
-- If they ask to "add" something, incorporate it naturally without repeating the entire reply
-- If they ask to change tone, adjust while keeping facts intact`;
-
-    const userMsg = `ORIGINAL BUYER MESSAGE:
-"${customer_message || 'Not provided'}"
-
-${threadText ? `CONVERSATION THREAD:\n${threadText}\n` : ''}
-
-CURRENT DRAFT REPLY:
+    const userMsg = `ORIGINAL REPLY:
 "${original_reply}"
-${historyContext}
 
-SELLER'S NEW MODIFICATION INSTRUCTION:
+BUYER'S MESSAGE (for context):
+"${customer_message}"
+
+SELLER'S INSTRUCTION:
 "${instructions}"
 
-ORDER CONTEXT:
-- Buyer: ${buyer_name || 'Unknown'}
-- Order ID: ${order_id || 'Not provided'}
-- Product: ${product_title || 'Not provided'}
+Now rewrite the reply following the instruction EXACTLY. 
 
-Now rewrite the reply following the seller's instruction. Maintain professionalism and never admit fault.`;
+CRITICAL:
+- If instruction says "just" or "only" → Make it VERY short
+- If instruction says "nothing else" → Keep it minimal
+- Don't add extra politeness unless asked
+- Follow the instruction literally
+
+Write the modified reply now.`;
 
     let result;
     try {
