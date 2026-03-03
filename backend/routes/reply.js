@@ -287,8 +287,39 @@ const reasoning = reasoningAgent({
   profit: profitOut
 });
 
-// 6) Writer Agent (AI)
+// ── Rule-based short-circuit (Junior Agent) ─────────────────────────────
+// Fires BEFORE writerAgent for routine, low-risk, short messages.
+// These need no AI — a polished template is faster and just as good.
+const sign = user.signature_name || user.name || 'The Seller';
+const biz  = user.business_name  || 'our store';
+const msgLen = latestBuyerMessage.trim().length;
+
+const juniorTemplates = {
+  positive_feedback: `Hi,\n\nThank you so much — really glad to hear that! It means a lot. If you ever need anything in the future, don't hesitate to get in touch.\n\nBest regards,\n${sign}`,
+  off_platform:      `Hi,\n\nThank you for your message. For the protection of both parties, I keep all communication and transactions through eBay's official system.\n\nPlease continue here — happy to help with anything you need.\n\nBest regards,\n${sign}`,
+  shipping_inquiry:  `Hi,\n\nThank you for your interest! Shipping details and estimated delivery times are listed on each item's page. If you have a specific question about delivery to your location, feel free to ask.\n\nBest regards,\n${sign}`,
+  item_question:     `Hi,\n\nThank you for your question! All product details, dimensions, and compatibility information are listed in the item description — I'd recommend checking there first.\n\nIf you can't find what you need, just let me know and I'll be happy to help.\n\nBest regards,\n${sign}`,
+};
+
+// Conditions for Junior Agent:
+// - intent has a template AND
+// - low risk AND
+// - either it's a positive_feedback/off_platform (always template) OR message is short (< 80 chars)
+const alwaysTemplate = ['positive_feedback', 'off_platform'].includes(classifier.intent);
+const shortAndSimple = ['shipping_inquiry', 'item_question'].includes(classifier.intent) && msgLen < 80;
+
 let result;
+
+if (juniorTemplates[classifier.intent] && classifier.risk === 'low' && (alwaysTemplate || shortAndSimple)) {
+  result = {
+    reply:  juniorTemplates[classifier.intent],
+    model:  'rule',
+    tokens: 0,
+    cost:   0
+  };
+} else {
+
+// 6) Writer Agent (AI)
 try {
   result = await writerAgent({
     user,
@@ -304,13 +335,16 @@ try {
 
 // 7) Safety Check Agent (final pass)
 const safe = safetyCheckAgent({ draft: result.reply });
+result = { ...result, reply: safe.reply };
 
-const reply = safe.reply;
-const model = result.model;
+} // end Junior Agent else block
+
+const reply  = result.reply;
+const model  = result.model;
 const tokens = result.tokens;
-const cost = result.cost;
+const cost   = result.cost;
 
-// Determine route label (for your usage counters)
+// Determine route label
 const route = model === 'gpt-4o-mini' ? 'mini' : model.startsWith('claude') ? 'large' : 'rule';
 
 // return intent/risk from classifier
