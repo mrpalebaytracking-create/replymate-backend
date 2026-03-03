@@ -11,7 +11,7 @@ function classifyIntent(message) {
   const msg = (message || '').toLowerCase();
 
   const patterns = {
-    positive_feedback:[/^thanks?[\s!.]*$/i, /^thank you[\s!.]*$/i, /^cheers[\s!.]*$/i, /^great[\s!.]*$/i, /^perfect[\s!.]*$/i, /^brilliant[\s!.]*$/i, /^excellent[\s!.]*$/i, /^amazing[\s!.]*$/i, /^appreciate it[\s!.]*$/i, /^received[\s!.]*$/i, /^got it[\s!.]*$/i, /^ok(ay)?[\s!.]*$/i, /^sounds good[\s!.]*$/i, /^wonderful[\s!.]*$/i, /thank.*(so much|very much|a lot)/i, /great (seller|service|item|product)/i, /love (it|this)/i, /happy with/i, /well packed/i, /fast (ship|deliver)/i],
+    positive_feedback:[/^thanks?[\s!.]*$/i, /^thank you[\s!.]*$/i, /^cheers[\s!.]*$/i, /^great[\s!.]*$/i, /^perfect[\s!.]*$/i, /^brilliant[\s!.]*$/i, /^excellent[\s!.]*$/i, /^amazing[\s!.]*$/i, /^appreciate it[\s!.]*$/i, /^received[\s!.]*$/i, /^got it[\s!.]*$/i, /^ok(ay)?[\s!.]*$/i, /^sounds good[\s!.]*$/i, /^wonderful[\s!.]*$/i, /^fine[\s!.]*$/i, /^alright[\s!.]*$/i, /^no problem[\s!.]*$/i, /^no worries[\s!.]*$/i, /^sure[\s!.]*$/i, /^noted[\s!.]*$/i, /^understood[\s!.]*$/i, /^pleasure[\s!.]*$/i, /^my pleasure[\s!.]*$/i, /^all good[\s!.]*$/i, /^brilliant[\s!.]*$/i, /thank.*(so much|very much|a lot)/i, /great (seller|service|item|product)/i, /love (it|this)/i, /happy with/i, /well packed/i, /fast (ship|deliver)/i, /pleasure.*thank/i, /thank.*pleasure/i],
     tracking:         [/track/i, /where.*(order|package|item|shipment)/i, /not received/i, /delivery date/i, /when.*(arrive|deliver|ship|get)/i, /hasn.t (arrived|shipped)/i, /shipping status/i],
     return:           [/return/i, /send.*back/i, /exchange/i, /return (policy|label|request)/i],
     refund:           [/refund/i, /money back/i, /charge.?back/i, /reimburse/i],
