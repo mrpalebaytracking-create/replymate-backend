@@ -148,14 +148,30 @@ function buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, l
   let paragraph = '';
 
   if (route === 'rule') {
-    // Junior Agent paragraphs
-    const juniorParagraphs = {
-      positive_feedback: "Your buyer is just saying thanks — this needed a warm, genuine response, not a long one. Your Junior Agent handled it instantly using a proven template. Keeping it short is the right call here: over-responding to a simple thank you can feel awkward or pushy. Clean, friendly, done.",
-      off_platform:      "Your buyer tried to move the conversation off eBay. Your Junior Agent replied with a polite but firm refusal that keeps everything on-platform. This protects you — transactions and disputes handled outside eBay are not covered by seller protection.",
-      shipping_inquiry:  "Your buyer had a standard shipping question. Your Junior Agent answered using a proven template — consistent, accurate, and safe. Nothing in here makes delivery promises that your listing doesn't already support.",
-      item_question:     "Your buyer asked a product question. Your Junior Agent pointed them to the listing — the right answer every time, because it avoids you committing to specs you might misremember under pressure.",
-    };
-    paragraph = juniorParagraphs[intent] || "This was a routine message that matched a proven reply template. Your Junior Agent handled it instantly. The reply is professional, accurate, and keeps you covered.";
+    // Junior Agent paragraphs — positive_feedback is message-aware
+    if (intent === 'positive_feedback') {
+      const msg = (latestBuyerMessage || '').trim().toLowerCase();
+      if (/^(fine|alright|ok|okay|sure|noted|understood|all good)[\s!.]*$/i.test(msg)) {
+        paragraph = "Your buyer sent a brief acknowledgement — a one-word reply that just needs a clean, professional close. Your Junior Agent handled it instantly. There's no question to answer here, so the reply keeps things warm and leaves the door open without saying anything unnecessary.";
+      } else if (/pleasure|my pleasure/i.test(msg)) {
+        paragraph = "Your buyer is being polite and wrapping up the conversation. Your Junior Agent replied in kind — short, warm, and proportionate. Matching your buyer's tone here builds goodwill without overdoing it.";
+      } else if (/thank/i.test(msg)) {
+        paragraph = "Your buyer is saying thanks — this needed a warm, genuine response, not a long one. Your Junior Agent handled it instantly. Keeping it short is the right call here: over-responding to a simple thank you can feel awkward or pushy. Clean, friendly, done.";
+      } else if (/great|brilliant|excellent|amazing|wonderful|fantastic|perfect/i.test(msg)) {
+        paragraph = "Your buyer left positive feedback on the transaction. Your Junior Agent replied briefly and warmly — enough to acknowledge the compliment without sounding scripted. Short positive exchanges like this are great for your seller reputation.";
+      } else if (/happy|pleased|love|satisfied/i.test(msg)) {
+        paragraph = "Your buyer is expressing satisfaction. Your Junior Agent kept the reply short and genuine — the right tone for a conversation that's ending well. No need to oversell it, just close it cleanly.";
+      } else {
+        paragraph = "Your buyer sent a short, positive message. Your Junior Agent replied warmly and kept it brief — matching the buyer's energy is the right move here. A proportionate reply feels more natural and genuine than a long response to a short message.";
+      }
+    } else {
+      const juniorParagraphs = {
+        off_platform:     "Your buyer tried to move the conversation off eBay. Your Junior Agent replied with a polite but firm refusal that keeps everything on-platform. This protects you — transactions and disputes handled outside eBay are not covered by seller protection.",
+        shipping_inquiry: "Your buyer had a standard shipping question. Your Junior Agent answered using a proven template — consistent, accurate, and safe. Nothing in here makes delivery promises that your listing doesn't already support.",
+        item_question:    "Your buyer asked a product question. Your Junior Agent pointed them to the listing — the right answer every time, because it avoids you committing to specs you might misremember under pressure.",
+      };
+      paragraph = juniorParagraphs[intent] || "This was a routine message that matched a proven reply template. Your Junior Agent handled it instantly. The reply is professional, accurate, and keeps you covered.";
+    }
 
   } else if (route === 'large') {
     // Risk Specialist paragraphs — always high risk
