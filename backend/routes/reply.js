@@ -394,13 +394,36 @@ router.post('/modify', requireLicense, async (req, res) => {
   const startTime = Date.now();
 
   try {
-    const { original_reply, customer_message, instructions } = req.body;
+    const { 
+      original_reply, 
+      customer_message, 
+      instructions,
+      buyer_name,
+      order_id,
+      product_title,
+      thread_messages,
+      modification_history
+    } = req.body;
 
     if (!original_reply || !instructions) {
       return res.status(400).json({ error: 'Original reply and instructions are required' });
     }
 
     const user = req.user;
+
+    // Build rich context for modification
+    const threadText = Array.isArray(thread_messages) && thread_messages.length
+      ? thread_messages.slice(-10).map(m => `${(m.role || 'buyer').toUpperCase()}: ${String(m.text || '').trim()}`).join('\n')
+      : '';
+
+    // Include modification history for context continuity
+    let historyContext = '';
+    if (Array.isArray(modification_history) && modification_history.length > 0) {
+      historyContext = '\n\nPREVIOUS MODIFICATIONS:\n' + 
+        modification_history.slice(-3).map((mod, i) => 
+          `${i + 1}. Instruction: "${mod.instruction}"\n   Result: "${mod.previous_reply.slice(0, 150)}..."`
+        ).join('\n');
+    }
 
     const systemPrompt = `You are an expert eBay customer service assistant. A seller has asked you to modify a draft reply.
 
@@ -409,14 +432,39 @@ SELLER INFO:
 - Seller name: ${user.signature_name || user.name || 'The Seller'}
 - Preferred tone: ${user.reply_tone || 'professional'}
 
-RULES:
-- Apply the seller's modification instructions to the existing reply
-- Keep the same general tone and structure
-- Never admit fault or liability
-- Never suggest communicating outside of eBay
-- Keep it concise unless asked to expand`;
+YOUR TASK:
+Apply the seller's modification instructions to the existing reply while:
+1. Keeping the same general structure and professionalism
+2. Maintaining all factual information (order IDs, tracking, etc.)
+3. Following the seller's exact instructions
+4. Never admitting fault or liability
+5. Never suggesting off-eBay communication
+6. Keeping it concise unless asked to expand
 
-    const userMsg = `Original customer message:\n"${customer_message || 'Not provided'}"\n\nCurrent draft reply:\n"${original_reply}"\n\nSeller's modification instructions:\n"${instructions}"`;
+IMPORTANT:
+- This may be one of several modifications - consider the conversation history
+- The seller knows their customer best - trust their judgment
+- If they ask to "add" something, incorporate it naturally without repeating the entire reply
+- If they ask to change tone, adjust while keeping facts intact`;
+
+    const userMsg = `ORIGINAL BUYER MESSAGE:
+"${customer_message || 'Not provided'}"
+
+${threadText ? `CONVERSATION THREAD:\n${threadText}\n` : ''}
+
+CURRENT DRAFT REPLY:
+"${original_reply}"
+${historyContext}
+
+SELLER'S NEW MODIFICATION INSTRUCTION:
+"${instructions}"
+
+ORDER CONTEXT:
+- Buyer: ${buyer_name || 'Unknown'}
+- Order ID: ${order_id || 'Not provided'}
+- Product: ${product_title || 'Not provided'}
+
+Now rewrite the reply following the seller's instruction. Maintain professionalism and never admit fault.`;
 
     let result;
     try {
@@ -427,10 +475,26 @@ RULES:
 
     const latency = Date.now() - startTime;
 
+    // Log the modification
+    await supabase.from('reply_log').insert({
+      user_id: user.id,
+      intent: 'modification',
+      route: 'modify',
+      model: result.model,
+      customer_message: (customer_message || '').slice(0, 2000),
+      generated_reply: result.reply.slice(0, 2000),
+      modify_instructions: instructions.slice(0, 500),
+      latency_ms: latency,
+      tokens_used: result.tokens || 0,
+      cost_usd: result.cost || 0,
+      source: 'extension'
+    });
+
     res.json({
       success: true,
       reply: result.reply,
       route: 'modify',
+      model: result.model,
       latency_ms: latency
     });
 
