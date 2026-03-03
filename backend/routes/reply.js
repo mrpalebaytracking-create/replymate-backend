@@ -128,7 +128,7 @@ async function callAnthropic(systemPrompt, userMessage) {
 // ── Build "Why This Answer" payload ───────────────────────────────────────
 // Assembles a clean, seller-facing explanation from already-computed pipeline data.
 // No new DB queries. No AI calls. No financial information exposed.
-function buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, latency }) {
+function buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, latency, latestBuyerMessage }) {
 
   // ── 1) Agent identity ──────────────────────────────────────────────────
   const agents = {
@@ -193,7 +193,23 @@ function buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, l
     } else if (intent === 'item_question') {
       paragraph = "Your buyer asked a product question. Your Senior Agent answered helpfully while pointing to the listing for full details — this protects you from committing to specs you might not have at hand. Accurate, professional, and safe.";
     } else {
-      paragraph = "Your Senior Agent reviewed this message and wrote a reply that addresses your buyer's concern professionally. The wording is careful — no liability accepted, no off-platform suggestions, no promises that could create problems later.";
+      // General fallback — varies by message length and tone so no two feel the same
+      const msgLen   = (latestBuyerMessage || '').trim().length;
+      const msgLower = (latestBuyerMessage || '').toLowerCase();
+
+      if (msgLen <= 15) {
+        // Very short — one or two words like "Fine", "Noted", "OK sounds good"
+        paragraph = "Your buyer sent a short acknowledgement — this needed a brief, warm reply that closes the conversation cleanly without over-explaining. Your Senior Agent kept it proportionate. A long response to a short message can feel odd, so the reply matches the buyer's energy.";
+      } else if (msgLower.includes('sorry') || msgLower.includes('apologise') || msgLower.includes('apologize') || msgLower.includes('my fault') || msgLower.includes('my mistake')) {
+        paragraph = "Your buyer is apologising or acknowledging an issue. Your Senior Agent replied warmly without over-reassuring or making commitments. The tone keeps the relationship positive while keeping you covered — no admissions, no promises, nothing that could be used against you later.";
+      } else if (msgLower.includes('wait') || msgLower.includes('patient') || msgLower.includes('understand')) {
+        paragraph = "Your buyer is showing patience or expressing understanding — a good sign. Your Senior Agent replied warmly to reinforce that goodwill without making delivery promises or setting expectations you might not be able to meet. Short, appreciative, and safe.";
+      } else if (msgLen > 200) {
+        // Long detailed message
+        paragraph = "Your buyer sent a detailed message. Your Senior Agent read it carefully and addressed the main concern without getting drawn into side points. The reply is focused — covering what matters, keeping the tone professional, and avoiding anything that could create liability or misunderstanding.";
+      } else {
+        paragraph = "Your Senior Agent reviewed this message and kept the reply professional and precise. Nothing in here creates liability, makes promises, or suggests off-platform communication — the three things most likely to cause problems with eBay sellers.";
+      }
     }
   }
 
@@ -408,7 +424,7 @@ const risk = classifier.risk;
     const debug = req.query.debug === '1';
 
     // Build why payload from already-computed pipeline data (no extra cost, no extra queries)
-    const why = buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, latency });
+    const why = buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, latency, latestBuyerMessage });
 
 res.json({
   success: true,
