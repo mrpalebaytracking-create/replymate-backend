@@ -480,6 +480,35 @@ res.json({
   }
 });
 
+// ── Strips conversational preamble from AI replies ────────────────────────
+// GPT sometimes prefixes replies with "Here's a revised version:" etc.
+// This function removes that and returns only the actual reply text.
+function stripPreamble(text) {
+  if (!text) return text;
+  // Patterns that indicate a preamble line
+  const preamblePatterns = [
+    /^(here'?s?|sure[,!]?|of course[,!]?|certainly[,!]?|absolutely[,!]?).{0,80}:\s*/i,
+    /^(i'?ve?|i have).{0,60}:\s*/i,
+    /^(below is|here is|here are|the (updated|revised|modified|new) (reply|message|version)).{0,60}:\s*/i,
+    /^(updated|revised|modified) (reply|message|version)[:\s]+/i,
+  ];
+
+  for (const pat of preamblePatterns) {
+    const cleaned = text.replace(pat, '').trim();
+    // Only strip if what remains still looks like a real reply (has some length)
+    if (cleaned.length > 20 && cleaned !== text) return cleaned;
+  }
+
+  // Also handle: first line ends with colon and is short (< 80 chars) — classic preamble
+  const lines = text.split('\n');
+  if (lines.length > 1 && lines[0].trim().endsWith(':') && lines[0].trim().length < 100) {
+    const rest = lines.slice(1).join('\n').trim();
+    if (rest.length > 20) return rest;
+  }
+
+  return text;
+}
+
 // ── POST /reply/modify — full GPT conversation, long-input aware ──────────
 router.post('/modify', requireLicense, async (req, res) => {
   const startTime = Date.now();
@@ -523,7 +552,7 @@ CRITICAL RULES:
 4. Never suggest off-eBay communication.
 5. Never admit fault or accept liability unless explicitly instructed.
 6. Always end with: "Best regards,\\n${sign}"
-7. If the seller's instruction is a question or asks for your opinion — answer it conversationally first, then offer to rewrite the reply.
+7. OUTPUT THE REPLY ONLY — no preamble, no "Here's the revised reply:", no explanation before or after. Just the reply itself, ready to send.
 
 YOU HAVE FULL CONTEXT of the buyer's message and every previous version of this reply. Build on that context.`;
 
@@ -560,7 +589,12 @@ YOU HAVE FULL CONTEXT of the buyer's message and every previous version of this 
     const aiData = await response.json();
     if (aiData.error) throw new Error(aiData.error.message || 'OpenAI error');
 
-    const modifiedReply = aiData.choices[0].message.content.trim();
+    const rawReply = aiData.choices[0].message.content.trim();
+
+    // Strip any conversational preamble GPT adds before the actual reply.
+    // e.g. "Here's a revised reply:" / "Sure! Here is the updated version:" etc.
+    // We detect these by looking for a colon-terminated intro sentence, then take what follows.
+    const modifiedReply = stripPreamble(rawReply);
     const usage  = aiData.usage || {};
     const tokens = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
     const cost   = ((usage.prompt_tokens || 0) * 0.00000015) + ((usage.completion_tokens || 0) * 0.0000006);
