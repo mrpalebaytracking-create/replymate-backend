@@ -126,11 +126,11 @@ async function callAnthropic(systemPrompt, userMessage) {
 
 
 // ── Build "Why This Answer" payload ───────────────────────────────────────
-// Assembles a clean, seller-facing explanation from already-computed pipeline data.
-// No new DB queries. No AI calls. No financial information exposed.
-function buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, latency, latestBuyerMessage }) {
+// Reads agent traces to produce a SPECIFIC, factual explanation of what happened.
+// Every sentence refers to real data found — never a generic fallback.
+function buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, latency, latestBuyerMessage, productTitle }) {
 
-  // ── 1) Agent identity ──────────────────────────────────────────────────
+  // ── Agent identity ─────────────────────────────────────────────────────
   const agents = {
     rule:  { name: 'Junior Agent',    icon: '📋' },
     mini:  { name: 'Senior Agent',    icon: '✍️'  },
@@ -138,110 +138,189 @@ function buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, l
   };
   const agent = agents[route] || agents.mini;
 
-  // ── 2) eBay data context ───────────────────────────────────────────────
-  const ebayConnected  = !dataFetch.missing.includes('ebay_oauth');
-  const hasOrderData   = !!(dataFetch.fetched && dataFetch.fetched.order);
-  const hasTracking    = !!(dataFetch.fetched && dataFetch.fetched.tracking && dataFetch.fetched.tracking.length > 0 && dataFetch.fetched.tracking[0].trackingNumber);
-  const orderIdFound   = !!(classifier.extracted && classifier.extracted.orderId);
+  // ── Pull traces from each agent ────────────────────────────────────────
+  const ct = classifier.trace  || {};   // classifier trace
+  const dt = dataFetch.trace   || {};   // data fetch trace
+  const rt = reasoning.trace   || {};   // reasoning trace
 
-  // ── 3) Paragraph — Style B (reassuring, warm, no financials) ──────────
+  const ebayConnected = dt.ebay_connected || !dataFetch.missing.includes('ebay_oauth');
+  const hasOrderData  = !!(dataFetch.fetched && dataFetch.fetched.order);
+  const hasTracking   = !!(dt.tracking_found);
+  const productTitle_ = rt.product_title || productTitle || null;
+
+  // ── Build the specific paragraph ──────────────────────────────────────
   let paragraph = '';
+  const parts   = []; // sentence fragments assembled into paragraph
 
+  // ── JUNIOR AGENT ──────────────────────────────────────────────────────
   if (route === 'rule') {
-    // Junior Agent paragraphs — positive_feedback is message-aware
     if (intent === 'positive_feedback') {
       const msg = (latestBuyerMessage || '').trim().toLowerCase();
-      if (/^(fine|alright|ok|okay|sure|noted|understood|all good)[\s!.]*$/i.test(msg)) {
-        paragraph = "Your buyer sent a brief acknowledgement — a one-word reply that just needs a clean, professional close. Your Junior Agent handled it instantly. There's no question to answer here, so the reply keeps things warm and leaves the door open without saying anything unnecessary.";
-      } else if (/pleasure|my pleasure/i.test(msg)) {
-        paragraph = "Your buyer is being polite and wrapping up the conversation. Your Junior Agent replied in kind — short, warm, and proportionate. Matching your buyer's tone here builds goodwill without overdoing it.";
-      } else if (/thank/i.test(msg)) {
-        paragraph = "Your buyer is saying thanks — this needed a warm, genuine response, not a long one. Your Junior Agent handled it instantly. Keeping it short is the right call here: over-responding to a simple thank you can feel awkward or pushy. Clean, friendly, done.";
-      } else if (/great|brilliant|excellent|amazing|wonderful|fantastic|perfect/i.test(msg)) {
-        paragraph = "Your buyer left positive feedback on the transaction. Your Junior Agent replied briefly and warmly — enough to acknowledge the compliment without sounding scripted. Short positive exchanges like this are great for your seller reputation.";
-      } else if (/happy|pleased|love|satisfied/i.test(msg)) {
-        paragraph = "Your buyer is expressing satisfaction. Your Junior Agent kept the reply short and genuine — the right tone for a conversation that's ending well. No need to oversell it, just close it cleanly.";
-      } else {
-        paragraph = "Your buyer sent a short, positive message. Your Junior Agent replied warmly and kept it brief — matching the buyer's energy is the right move here. A proportionate reply feels more natural and genuine than a long response to a short message.";
-      }
+      if (/^(fine|alright|ok|okay|sure|noted|understood|all good)[\s!.]*$/i.test(msg))
+        paragraph = "Your buyer sent a brief acknowledgement — nothing to answer, just needs a clean close. I handled it instantly with a short, warm sign-off that leaves the door open without over-explaining.";
+      else if (/pleasure|my pleasure/i.test(msg))
+        paragraph = "Your buyer is wrapping up politely. I matched their tone — short and warm. Over-responding to a polite close feels awkward, so I kept it proportionate.";
+      else if (/thank/i.test(msg))
+        paragraph = "Your buyer said thanks. I kept the reply short on purpose — a long response to a simple thank-you can feel pushy or scripted. Clean, genuine, done.";
+      else if (/great|brilliant|excellent|amazing|wonderful|fantastic|perfect/i.test(msg))
+        paragraph = "Your buyer left positive feedback. I replied briefly and warmly — enough to acknowledge it without sounding robotic. Short positive exchanges like this build your seller reputation.";
+      else
+        paragraph = "Your buyer sent a short, positive message. I matched their energy — brief and warm. No question to answer, so no need for a long reply.";
+
+    } else if (intent === 'off_platform') {
+      paragraph = "Your buyer tried to move the conversation off eBay. I declined politely but firmly. Communicating or transacting outside eBay removes your seller protection entirely — if a dispute arises, eBay won't be able to step in.";
+
+    } else if (intent === 'shipping_inquiry') {
+      paragraph = `Your buyer asked about shipping${productTitle_ ? ` for the ${productTitle_}` : ''}. I answered with a safe, consistent template — no delivery promises beyond what your listing already states. Delivery promises are the most common source of negative feedback when things run late.`;
+
+    } else if (intent === 'item_question') {
+      const decisions = rt.decisions || [];
+      const inTitleDecision = decisions.find(d => d.includes('title confirms'));
+      const inDescDecision  = decisions.find(d => d.includes('description also mentions'));
+      const descAvailable   = rt.description_available;
+
+      if (inTitleDecision && inDescDecision && productTitle_)
+        paragraph = `Your buyer asked about product specifications. I checked both your listing title and description for "${productTitle_}". ${inTitleDecision.charAt(0).toUpperCase() + inTitleDecision.slice(1)}, and the description also confirms additional details. The reply is fully backed by your listing content.`;
+      else if (inTitleDecision && productTitle_)
+        paragraph = `Your buyer asked about product specifications. The answer was clearly stated in your listing title — "${productTitle_}". ${descAvailable ? 'I also scanned the description for consistency.' : ''} Safe to confirm directly to your buyer.`;
+      else if (productTitle_)
+        paragraph = `Your buyer asked a product question about the ${productTitle_}. I pointed them to your full listing${descAvailable ? ' (title and description)' : ''} — avoids committing to specs you don't have in front of you.`;
+      else
+        paragraph = "Your buyer asked a product question. I pointed them to the listing for exact specs — avoids committing to details you might not have at hand.";
+
     } else {
-      const juniorParagraphs = {
-        off_platform:     "Your buyer tried to move the conversation off eBay. Your Junior Agent replied with a polite but firm refusal that keeps everything on-platform. This protects you — transactions and disputes handled outside eBay are not covered by seller protection.",
-        shipping_inquiry: "Your buyer had a standard shipping question. Your Junior Agent answered using a proven template — consistent, accurate, and safe. Nothing in here makes delivery promises that your listing doesn't already support.",
-        item_question:    "Your buyer asked a product question. Your Junior Agent pointed them to the listing — the right answer every time, because it avoids you committing to specs you might misremember under pressure.",
-      };
-      paragraph = juniorParagraphs[intent] || "This was a routine message that matched a proven reply template. Your Junior Agent handled it instantly. The reply is professional, accurate, and keeps you covered.";
+      paragraph = "This was a routine message that matched a proven reply template. I handled it instantly — professional, accurate, and no AI needed.";
     }
 
+  // ── RISK SPECIALIST ───────────────────────────────────────────────────
   } else if (route === 'large') {
-    // Risk Specialist paragraphs — always high risk
-    const riskParagraphs = {
-      legal_threat:  "I spotted legal language in this message and your Risk Specialist took over immediately. The reply is deliberately neutral — it doesn't agree with the buyer, doesn't argue back, and doesn't put anything in writing that could be used against you. Redirecting to eBay's Resolution Centre is the correct move: it shows good faith, keeps everything documented, and keeps your seller protection intact.",
-      fraud_claim:   "Your buyer is making a fraud or authenticity claim — your Risk Specialist handled this one. The reply calmly defends your product without getting defensive or aggressive. It opens a path to resolution without admitting anything. This is the exact tone that prevents cases like this from escalating into formal disputes.",
-      off_platform:  "Your buyer attempted to move this conversation off eBay — your Risk Specialist flagged it immediately. Communicating or transacting outside eBay removes your seller protection entirely. The reply refuses politely without making your buyer feel accused.",
-    };
-    paragraph = riskParagraphs[intent] || "Your Risk Specialist reviewed this message and handled it with extra care. The reply is precise — every word chosen to protect you. No fault admitted, no promises made, no escalation.";
+    const flags = (classifier.trace?.signals || []).join('; ');
 
+    if (intent === 'legal_threat')
+      paragraph = `I detected legal language in this message (${flags || 'threat keywords found'}). Your Risk Specialist took over immediately. The reply is deliberately neutral — it doesn't agree, argue, or put anything in writing that could be used against you. I directed your buyer to eBay's Resolution Centre: that shows good faith, keeps everything documented, and keeps your seller protection intact.`;
+    else if (intent === 'fraud_claim')
+      paragraph = `Your buyer is making an authenticity or wrong-item claim (${flags || 'fraud keywords detected'}). Your Risk Specialist handled this. The reply opens a path to resolution without admitting anything or getting defensive — the exact tone that prevents these from escalating into formal eBay disputes.`;
+    else if (intent === 'off_platform')
+      paragraph = `Your buyer attempted to move this conversation off eBay (${flags || 'off-platform keywords detected'}). Your Risk Specialist flagged it immediately. Communicating outside eBay removes your seller protection entirely. The reply declines politely without making your buyer feel accused.`;
+    else
+      paragraph = `Your Risk Specialist handled this message (${flags || 'high-risk signals detected'}). The reply is precise — every word chosen to protect you. No fault admitted, no promises made, no escalation.`;
+
+  // ── SENIOR AGENT ──────────────────────────────────────────────────────
   } else {
-    // Senior Agent paragraphs — intent + data aware
+
     if (intent === 'tracking') {
-      if (hasTracking) {
-        paragraph = "Your buyer wants to know where their order is. I found the tracking details directly from your eBay account and included the real information in the reply — your buyer gets a proper answer instead of being told to find it themselves. The reply is short on purpose: one question deserves one answer. No delivery date promises were made.";
-      } else if (ebayConnected && !orderIdFound) {
-        paragraph = "Your buyer wants to know where their order is. I couldn't match this to a specific order because no order ID was found in the conversation, so I wrote a helpful reply and asked your buyer to check their eBay notifications. If an order number appears in future messages, I'll pull the live tracking details automatically.";
+      if (dt.delivery_status === 'delivered') {
+        parts.push(`Your buyer says they haven't received their order, but the tracking shows it was already delivered`);
+        if (dt.tracking_carrier) parts.push(`by ${dt.tracking_carrier}${dt.tracking_number ? ' (' + dt.tracking_number + ')' : ''}`);
+        if (rt.latest_tracking_event) parts.push(`— latest update: "${rt.latest_tracking_event}"`);
+        parts.push(`. I asked your buyer to check with neighbours or a safe place before we take any further action.`);
+
+      } else if (dt.delivery_status === 'out_for_delivery') {
+        parts.push(`Your buyer is asking for an update. I checked the tracking`);
+        if (dt.tracking_carrier) parts.push(` with ${dt.tracking_carrier}`);
+        parts.push(` and the parcel is out for delivery today. I informed your buyer delivery is imminent — no action needed on your side right now.`);
+
+      } else if (dt.delivery_status === 'returned') {
+        parts.push(`Your buyer hasn't received their order. I checked the tracking and it shows the parcel was returned to sender`);
+        if (rt.latest_tracking_event) parts.push(` — last event: "${rt.latest_tracking_event}"`);
+        parts.push(`. I raised this as an issue to investigate with the courier and assured your buyer we're looking into it.`);
+
+      } else if (dt.delivery_status === 'in_transit' && dt.estimated_delivery && !dt.is_overdue) {
+        parts.push(`Your buyer hasn't received their order yet. I checked the tracking`);
+        if (dt.tracking_carrier) parts.push(` (${dt.tracking_carrier}${dt.tracking_number ? ' · ' + dt.tracking_number : ''})`);
+        parts.push(` — the parcel is in transit and the estimated delivery date is ${dt.estimated_delivery}, which hasn't passed yet. I asked your buyer to wait until that date before we take any action. No promises were made beyond what the tracking already shows.`);
+
+      } else if (dt.delivery_status === 'in_transit' && dt.is_overdue) {
+        parts.push(`Your buyer hasn't received their order. I checked the tracking`);
+        if (dt.tracking_carrier) parts.push(` (${dt.tracking_carrier})`);
+        parts.push(` — the estimated delivery date of ${dt.estimated_delivery} has now passed. I acknowledged the delay and told your buyer we're raising it with the courier. I was careful not to promise a refund or replacement at this stage.`);
+
       } else if (!ebayConnected) {
-        paragraph = "Your buyer wants to know where their order is. Since your eBay account isn't connected, I wrote a helpful reply without live order data and directed your buyer to their eBay notifications. Connect your eBay account and I'll include the real tracking number automatically next time.";
+        parts.push(`Your buyer asked about their order. Since your eBay account isn't connected, I couldn't pull live tracking data. I wrote a helpful reply and directed your buyer to their eBay order notifications.`);
+        parts.push(` Connect your eBay account and I'll include the real tracking number automatically next time.`);
+
+      } else if (!dt.order_found) {
+        parts.push(`Your buyer asked about their order. I checked your eBay account but couldn't match a specific order — no order ID was found in the conversation. I asked your buyer to check their eBay notifications and to share their order number so I can pull the live details.`);
+
       } else {
-        paragraph = "Your buyer wants to know where their order is. I wrote a helpful reply based on the information available. Your Senior Agent kept the tone calm, avoided delivery date promises, and directed your buyer to the right place.";
+        parts.push(`Your buyer asked about their order. I checked your eBay data and wrote a careful reply. No delivery promises were made and I directed your buyer to the right place to track their order.`);
       }
-    } else if (intent === 'return') {
-      paragraph = "Your buyer wants to return something. Your Senior Agent handled this carefully — the reply acknowledges the request without agreeing to a refund upfront, and guides your buyer through eBay's official return process. That protects you: no promises made, no liability accepted, everything kept on-platform.";
-    } else if (intent === 'refund') {
-      paragraph = "Your buyer is asking for a refund. Your Senior Agent acknowledged the concern professionally without committing to anything. The reply guides your buyer through eBay's resolution process — the right route because it keeps everything documented and protects both parties.";
+      paragraph = parts.join('');
+
     } else if (intent === 'damaged_item') {
-      paragraph = "Your buyer says their item arrived damaged. Your Senior Agent responded with empathy and asked for photos before anything else — that's important, because documentation protects you before any resolution is offered. No fault has been admitted and no refund has been promised.";
+      paragraph = `Your buyer says their item arrived damaged. Before doing anything else, I asked for photos. That's critical — documented evidence protects you if this goes to a dispute. No fault has been admitted and no refund or replacement has been promised. Once you have photos, you'll be in a much stronger position to decide what to offer.`;
+
+    } else if (intent === 'return') {
+      paragraph = `Your buyer wants to return the item${productTitle_ ? ` (${productTitle_})` : ''}. I acknowledged the request but didn't agree to a refund upfront — instead I guided them through eBay's official return process. That protects you: no liability accepted, everything on-platform, and no money moves until you receive the item back.`;
+
+    } else if (intent === 'refund') {
+      paragraph = `Your buyer is asking for a refund. I didn't commit to anything — I directed them through eBay's resolution process instead. That's the right route: it creates an audit trail, keeps everything documented, and protects both parties. The word "refund" wasn't used as a promise.`;
+
     } else if (intent === 'cancellation') {
-      paragraph = "Your buyer wants to cancel their order. Your Senior Agent assessed the situation and replied carefully. The wording keeps your options open without being dismissive — if the order is already dispatched, your buyer is guided toward the return process instead.";
+      const cancelDecision = (rt.decisions || []).find(d => d.includes('cancel') || d.includes('dispatch'));
+      if (cancelDecision)
+        paragraph = `Your buyer wants to cancel their order. I checked the order status — ${cancelDecision}. The reply handles this appropriately without being dismissive.`;
+      else
+        paragraph = `Your buyer wants to cancel their order. I replied carefully — keeping your options open without dismissing the request. If the order is already dispatched, your buyer is guided toward the return process instead.`;
+
     } else if (intent === 'discount_request') {
-      paragraph = "Your buyer is trying to negotiate on price. Your Senior Agent declined politely without being dismissive — the reply holds your position without damaging the relationship. Your buyer feels heard even though the answer is no.";
+      paragraph = `Your buyer is trying to negotiate on price${productTitle_ ? ` for the ${productTitle_}` : ''}. I declined politely without being dismissive — your buyer feels heard but the answer is no. I didn't offer any partial discount or create a precedent.`;
+
     } else if (intent === 'shipping_inquiry') {
-      paragraph = "Your buyer had a shipping question. Your Senior Agent gave a clear, helpful answer. Nothing in this reply makes delivery promises that your listing doesn't already support — that's intentional, because delivery promises are the most common source of negative feedback when things run late.";
+      paragraph = `Your buyer asked about shipping${productTitle_ ? ` for the ${productTitle_}` : ''}. I gave a clear, helpful answer without making delivery promises beyond what your listing already states. Vague delivery commitments are the most common cause of negative feedback when things run late.`;
+
     } else if (intent === 'item_question') {
-      paragraph = "Your buyer asked a product question. Your Senior Agent answered helpfully while pointing to the listing for full details — this protects you from committing to specs you might not have at hand. Accurate, professional, and safe.";
+      const decisions = rt.decisions || [];
+      const inTitleDecision  = decisions.find(d => d.includes('title confirms'));
+      const inDescDecision   = decisions.find(d => d.includes('description also mentions'));
+      const notFoundDecision = decisions.find(d => d.includes('neither title nor description'));
+      const descAvailable    = rt.description_available;
+
+      if (inTitleDecision && inDescDecision && productTitle_) {
+        paragraph = `Your buyer asked about product specifications. I checked both your listing title and description for "${productTitle_}". ${inTitleDecision.charAt(0).toUpperCase() + inTitleDecision.slice(1)}, and the description also confirms: ${inDescDecision.replace('listing description also mentions: ', '')}. I cross-referenced both sources before answering — the reply is fully backed by your listing.`;
+      } else if (inTitleDecision && productTitle_) {
+        paragraph = `Your buyer asked about product specifications. I checked your listing title — "${productTitle_}" — which ${inTitleDecision}. ${descAvailable ? 'I also checked the listing description, which is consistent.' : ''} The reply confirms this directly from your listing.`;
+      } else if (inDescDecision && productTitle_) {
+        paragraph = `Your buyer asked a spec question about the ${productTitle_}. The title doesn't explicitly mention this, but I found it confirmed in your listing description: ${inDescDecision.replace('listing description also mentions: ', '')}. The reply uses your description as the source.`;
+      } else if (notFoundDecision && productTitle_) {
+        paragraph = `Your buyer asked a spec question about the ${productTitle_}. I checked both the listing title and description but couldn't find a clear answer. Rather than guessing, I pointed your buyer to the full listing — avoids committing to details not clearly stated.`;
+      } else if (productTitle_) {
+        paragraph = `Your buyer asked a product question about the ${productTitle_}. I checked your listing${descAvailable ? ' title and description' : ' title'} and answered based on what's stated there.`;
+      } else {
+        paragraph = `Your buyer asked a product question. I answered based on the available listing information and pointed them to the full listing for complete specs.`;
+      }
+
     } else {
-      // General fallback — varies by message length and tone so no two feel the same
+      // General — use message signals from classifier trace
       const msgLen   = (latestBuyerMessage || '').trim().length;
       const msgLower = (latestBuyerMessage || '').toLowerCase();
+      const signal   = ct.signals?.[0] || '';
 
-      if (msgLen <= 15) {
-        // Very short — one or two words like "Fine", "Noted", "OK sounds good"
-        paragraph = "Your buyer sent a short acknowledgement — this needed a brief, warm reply that closes the conversation cleanly without over-explaining. Your Senior Agent kept it proportionate. A long response to a short message can feel odd, so the reply matches the buyer's energy.";
-      } else if (msgLower.includes('sorry') || msgLower.includes('apologise') || msgLower.includes('apologize') || msgLower.includes('my fault') || msgLower.includes('my mistake')) {
-        paragraph = "Your buyer is apologising or acknowledging an issue. Your Senior Agent replied warmly without over-reassuring or making commitments. The tone keeps the relationship positive while keeping you covered — no admissions, no promises, nothing that could be used against you later.";
-      } else if (msgLower.includes('wait') || msgLower.includes('patient') || msgLower.includes('understand')) {
-        paragraph = "Your buyer is showing patience or expressing understanding — a good sign. Your Senior Agent replied warmly to reinforce that goodwill without making delivery promises or setting expectations you might not be able to meet. Short, appreciative, and safe.";
-      } else if (msgLen > 200) {
-        // Long detailed message
-        paragraph = "Your buyer sent a detailed message. Your Senior Agent read it carefully and addressed the main concern without getting drawn into side points. The reply is focused — covering what matters, keeping the tone professional, and avoiding anything that could create liability or misunderstanding.";
-      } else {
-        paragraph = "Your Senior Agent reviewed this message and kept the reply professional and precise. Nothing in here creates liability, makes promises, or suggests off-platform communication — the three things most likely to cause problems with eBay sellers.";
-      }
+      if (msgLen <= 15)
+        paragraph = `Your buyer sent a short message ("${latestBuyerMessage?.trim()}"). I kept the reply proportionate — brief and warm. A long response to a short message feels off, so I matched their energy.`;
+      else if (msgLower.includes('sorry') || msgLower.includes('apologis') || msgLower.includes('my fault'))
+        paragraph = `Your buyer is apologising or acknowledging something. I replied warmly without over-reassuring or making commitments. The tone keeps the relationship positive while keeping you covered.`;
+      else if (msgLower.includes('wait') || msgLower.includes('patient') || msgLower.includes('understand'))
+        paragraph = `Your buyer is showing patience. I replied warmly to reinforce that goodwill — short, appreciative, and no promises made.`;
+      else if (msgLen > 200)
+        paragraph = `Your buyer sent a detailed message. I focused on the main concern without getting drawn into side points — covering what matters, avoiding anything that could create liability.`;
+      else if (signal)
+        paragraph = `I detected: ${signal}. I wrote a professional, focused reply that addresses the concern without creating liability, making promises, or suggesting off-platform communication.`;
+      else
+        paragraph = `I reviewed your buyer's message carefully and wrote a professional reply. Nothing in it creates liability, makes promises, or suggests off-platform communication.`;
     }
   }
 
-  // ── 4) Structured bits ─────────────────────────────────────────────────
+  // ── Structured data ────────────────────────────────────────────────────
   const riskLabels = { low: 'Low Risk', medium: 'Medium Risk', high: 'High Risk' };
-
-  // Pull constraints from reasoning (max 4, clean language)
   const constraints = (reasoning.constraints || []).slice(0, 4);
 
   // eBay data status line
   let ebayStatus = null;
-  if (hasTracking) {
-    const t = dataFetch.fetched.tracking[0];
-    ebayStatus = { type: 'good', text: `Live tracking used: ${t.carrier ? t.carrier + ' ' : ''}${t.trackingNumber}` };
+  if (hasTracking && dt.tracking_number) {
+    ebayStatus = { type: 'good', text: `Live tracking checked: ${dt.tracking_carrier ? dt.tracking_carrier + ' · ' : ''}${dt.tracking_number}` };
   } else if (hasOrderData) {
-    ebayStatus = { type: 'good', text: 'Live order data used from your eBay account' };
+    ebayStatus = { type: 'good', text: 'Live eBay order data used' };
   } else if (ebayConnected && ['tracking','return','refund','damaged_item','cancellation'].includes(intent)) {
     ebayStatus = { type: 'warn', text: 'eBay connected but no order ID found in this conversation' };
   } else if (!ebayConnected && ['tracking','return','refund','damaged_item','cancellation'].includes(intent)) {
@@ -252,10 +331,10 @@ function buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, l
     agent,
     paragraph,
     structured: {
-      risk:        { level: risk, label: riskLabels[risk] || 'Low Risk' },
+      risk:       { level: risk, label: riskLabels[risk] || 'Low Risk' },
       constraints,
       ebayStatus,
-      latency_ms:  latency
+      latency_ms: latency
     }
   };
 }
@@ -271,7 +350,9 @@ const {
   thread_messages,
   modify_instructions,
   buyer_name,
-  order_id
+  order_id,
+  product_title,
+  product_description
 } = req.body;
 
 const latestBuyerMessage = (latest_buyer_message || customer_message || '').trim();
@@ -316,7 +397,9 @@ const reasoning = reasoningAgent({
   classifier,
   dataFetch,
   risk: riskOut,
-  profit: profitOut
+  profit: profitOut,
+  productTitle:       product_title || '',
+  productDescription: product_description || ''
 });
 
 // 5b) Load seller preferences and inject into reasoning constraints
@@ -460,7 +543,7 @@ const risk = classifier.risk;
     const debug = req.query.debug === '1';
 
     // Build why payload from already-computed pipeline data (no extra cost, no extra queries)
-    const why = buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, latency, latestBuyerMessage });
+    const why = buildWhyData({ intent, route, risk, classifier, dataFetch, reasoning, latency, latestBuyerMessage, productTitle: product_title || '', productDescription: product_description || '' });
 
 res.json({
   success: true,
