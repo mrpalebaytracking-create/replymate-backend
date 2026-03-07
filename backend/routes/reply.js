@@ -710,4 +710,70 @@ router.get('/seller/insights', requireLicense, async (req, res) => {
   }
 });
 
+
+// ── POST /reply/why — generates Why panel data after stream completes ────
+// Called fire-and-forget from extension once reply is visible.
+// Uses gpt-4o-mini so it's fast and cheap.
+router.post('/why', requireLicense, async (req, res) => {
+  try {
+    const { buyer_message, generated_reply, order_id, is_pre_purchase } = req.body;
+    if (!buyer_message || !generated_reply)
+      return res.status(400).json({ error: 'buyer_message and generated_reply required' });
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: 'OpenAI key not configured' });
+
+    const prompt = `You are analysing an eBay customer service reply.
+
+BUYER MESSAGE: "${(buyer_message || '').slice(0, 500)}"
+GENERATED REPLY: "${(generated_reply || '').slice(0, 600)}"
+IS PRE-PURCHASE (no order yet): ${is_pre_purchase ? 'yes' : 'no'}
+ORDER ID: ${order_id || 'none'}
+
+Return ONLY a JSON object, no markdown:
+{
+  "agent": { "name": "Senior Agent", "icon": "🏆" },
+  "paragraph": "one sentence explaining the reply strategy — why this approach was chosen",
+  "structured": {
+    "risk": { "level": "low|medium|high", "label": "Low Risk|Medium Risk|High Risk" },
+    "constraints": ["up to 3 short seller preference bullets shown to user"],
+    "ebayStatus": { "type": "good|warn|missing", "text": "short eBay data status line", "showConnect": false }
+  }
+}
+
+Rules:
+- paragraph must be specific to THIS message — not generic
+- constraints = 2-3 things like "The seller prefers to keep tone friendly" based on the reply style
+- ebayStatus.type = "good" if order exists, "warn" if pre-purchase, "missing" if no eBay data
+- ebayStatus.text = short factual status like "Order found — tracking available" or "Pre-purchase enquiry — no order yet"`;
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 300,
+        temperature: 0.3
+      })
+    });
+
+    const data = await response.json();
+    if (data.error) throw new Error(data.error.message);
+
+    let why;
+    try {
+      const text = (data.choices?.[0]?.message?.content || '').replace(/```json|```/g, '').trim();
+      why = JSON.parse(text);
+    } catch {
+      return res.status(500).json({ error: 'Failed to parse why data' });
+    }
+
+    res.json({ success: true, why });
+  } catch (err) {
+    console.error('[reply] Why error:', err.message);
+    res.status(500).json({ error: 'Failed to generate why data' });
+  }
+});
+
 module.exports = router;
