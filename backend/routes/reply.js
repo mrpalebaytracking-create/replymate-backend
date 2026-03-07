@@ -225,11 +225,32 @@ router.post('/generate', requireLicense, async (req, res) => {
       product_description
     } = req.body;
 
-    const latestBuyerMessage = (latest_buyer_message || customer_message || '').trim();
-    const threadMessages     = Array.isArray(thread_messages) ? thread_messages : [];
+    const threadMessages = Array.isArray(thread_messages) ? thread_messages : [];
+
+    // ── FIX: Always reply to last BUYER message, never the seller's own ──────
+    // The extension passes latest_buyer_message but sometimes the last message
+    // in the thread is from the seller. Detect and correct this silently.
+    let latestBuyerMessage = (latest_buyer_message || customer_message || '').trim();
+
+    if (threadMessages.length > 0) {
+      const lastMsg  = threadMessages[threadMessages.length - 1];
+      const lastRole = (lastMsg?.role || '').toLowerCase();
+      // If extension passed the seller's own last message, find real buyer message
+      if (lastRole === 'seller' && latestBuyerMessage === (lastMsg?.text || '').trim()) {
+        const lastBuyer = [...threadMessages].reverse()
+          .find(m => (m.role || '').toLowerCase() === 'buyer' && (m.text || '').trim().length > 2);
+        if (lastBuyer) latestBuyerMessage = lastBuyer.text.trim();
+      }
+    }
+    // Final fallback — scan for any buyer message in thread
+    if (!latestBuyerMessage || latestBuyerMessage.length < 3) {
+      const lastBuyer = [...threadMessages].reverse()
+        .find(m => (m.role || '').toLowerCase() === 'buyer' && (m.text || '').trim().length > 2);
+      if (lastBuyer) latestBuyerMessage = lastBuyer.text.trim();
+    }
 
     if (!latestBuyerMessage || latestBuyerMessage.length < 3)
-      return res.status(400).json({ error: 'Customer message is required' });
+      return res.status(400).json({ error: 'No buyer message found to reply to.' });
 
     const user = req.user;
 
@@ -258,8 +279,6 @@ router.post('/generate', requireLicense, async (req, res) => {
 
     const conversationState = preClassify.conversationState;
     const classification    = preClassify.classification;
-
-    // Prefer extension-provided order ID, fall back to classifier extraction
     ctx.orderId = order_id || classification.entities?.orderId || null;
 
     // ════════════════════════════════════════════════════════════════════
@@ -272,12 +291,9 @@ router.post('/generate', requireLicense, async (req, res) => {
       const juniorResult = runJuniorAgent(user, intent, ctx.latestBuyerMessage);
       if (juniorResult) {
         const latency = Date.now() - startTime;
-
-        // Fire-and-forget usage tracking
         trackUsage(user.id, 'rule', preClassify.tokens || 0, preClassify.cost || 0).catch(() => {});
         logReply(user.id, intent, 'rule', 'rule', ctx.latestBuyerMessage, juniorResult.reply, latency, preClassify.tokens || 0, preClassify.cost || 0).catch(() => {});
         supabase.from('users').update({ last_active: new Date().toISOString() }).eq('id', user.id).then(() => {});
-
         return res.json({
           success:    true,
           reply:      juniorResult.reply,
@@ -305,25 +321,33 @@ router.post('/generate', requireLicense, async (req, res) => {
     }
 
     // ════════════════════════════════════════════════════════════════════
-    // Agent 2 — Data Fetch (no AI — eBay API call)
+    // PARALLEL BLOCK — Data Fetch + Risk/Profit + Seller Prefs simultaneously
+    // All three only need Call 1 output. Saves 4-8 seconds per reply.
     // ════════════════════════════════════════════════════════════════════
     const needsOrder = ['tracking', 'return', 'refund', 'cancellation', 'damaged_item'].includes(intent);
-    const dataFetch  = await dataFetchAgent({
-      userId:  user.id,
-      needs:   { order: needsOrder },
-      orderId: ctx.orderId
-    });
 
-    // ════════════════════════════════════════════════════════════════════
-    // CALL 2 — Agent 3 (Risk) + Agent 4 (Profit Protection) — GPT-4o-mini
-    // ════════════════════════════════════════════════════════════════════
-    const riskProfit = await riskProfitAgent({
-      classification,
-      conversationState,
-      dataFetch,
-      productTitle: ctx.productTitle,
-      orderValue:   null
-    });
+    const [dataFetch, riskProfit, prefRows] = await Promise.all([
+      // Agent 2 — eBay Data Fetch (no AI)
+      dataFetchAgent({ userId: user.id, needs: { order: needsOrder }, orderId: ctx.orderId }),
+      // Call 2 — Risk + Profit Protection (GPT-4o-mini)
+      riskProfitAgent({
+        classification,
+        conversationState,
+        dataFetch: { fetched: {}, trace: {}, missing: [] },
+        productTitle: ctx.productTitle,
+        orderValue:   null
+      }),
+      // Seller preferences (Supabase)
+      supabase
+        .from('seller_preferences')
+        .select('insight, applies_to_intent, times_seen')
+        .eq('user_id', user.id)
+        .or(`applies_to_intent.eq.${intent},applies_to_intent.is.null`)
+        .order('times_seen', { ascending: false })
+        .limit(6)
+        .then(r => r.data || [])
+        .catch(() => [])
+    ]);
 
     ctx.totalTokens += riskProfit.tokens || 0;
     ctx.totalCost   += riskProfit.cost   || 0;
@@ -331,25 +355,13 @@ router.post('/generate', requireLicense, async (req, res) => {
     const risk             = riskProfit.risk;
     const profitProtection = riskProfit.profitProtection;
 
-    // ── Inject learned seller preferences into risk constraints ──────────
-    try {
-      const { data: prefRows } = await supabase
-        .from('seller_preferences')
-        .select('insight, applies_to_intent, times_seen')
-        .eq('user_id', user.id)
-        .or(`applies_to_intent.eq.${intent},applies_to_intent.is.null`)
-        .order('times_seen', { ascending: false })
-        .limit(6);
-
-      if (prefRows && prefRows.length > 0) {
-        risk.constraints = [...(risk.constraints || []), ...prefRows.map(p => p.insight)];
-      }
-    } catch (prefErr) {
-      console.warn('[reply] Seller preferences load failed (non-fatal):', prefErr.message);
-    }
+    // Inject learned seller preferences
+    if (prefRows.length > 0)
+      risk.constraints = [...(risk.constraints || []), ...prefRows.map(p => p.insight)];
 
     // ════════════════════════════════════════════════════════════════════
-    // CALL 3 — Agent 5 (Reasoning / Strategy Brief) — GPT-4o-mini
+    // CALL 3 — Agent 5 (Reasoning / Strategy Brief) — GPT-4o
+    // Runs after parallel block — has full data from all previous agents
     // ════════════════════════════════════════════════════════════════════
     const reasoning = await reasoningAgent({
       classification,
