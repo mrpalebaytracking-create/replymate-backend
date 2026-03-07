@@ -14,7 +14,7 @@ const router   = express.Router();
 const fetch    = require('node-fetch');
 const supabase = require('../db/supabase');
 
-const { masterAgent }    = require('../agents/masterAgent');
+const { masterAgent }    = require('../agents/Masteragent');
 const { dataFetchAgent } = require('../agents/dataFetchAgent');
 
 // ── License middleware ────────────────────────────────────────────────────
