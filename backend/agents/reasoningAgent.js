@@ -124,7 +124,7 @@ Now produce the writer brief as JSON:
 }`;
 
   try {
-    const result = await callOpenAIJSON(SYSTEM_PROMPT, userPrompt, 'gpt-4o', 1100);
+    const result = await callOpenAIJSON(SYSTEM_PROMPT, userPrompt, 'gpt-4o-mini', 650);
     const parsed = result.parsed;
 
     return {
