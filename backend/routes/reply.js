@@ -14,8 +14,12 @@ const router   = express.Router();
 const fetch    = require('node-fetch');
 const supabase = require('../db/supabase');
 
-const { masterAgent }    = require('../agents/Masteragent');
-const { dataFetchAgent } = require('../agents/dataFetchAgent');
+const { masterAgent }             = require('../agents/Masteragent');
+const { dataFetchAgent }          = require('../agents/dataFetchAgent');
+const { conversationStateAgent }  = require('../agents/conversationStateAgent');
+const { profitProtectionAgent }   = require('../agents/profitProtectionAgent');
+const { safetyCheckAgent }        = require('../agents/safetyCheckAgent');
+const { complexityRiskAgent, shouldRunComplexityRisk } = require('../agents/complexityRiskAgent');
 
 // ── License middleware ────────────────────────────────────────────────────
 async function requireLicense(req, res, next) {
@@ -141,9 +145,25 @@ router.post('/generate', requireLicense, async (req, res) => {
       }
     }
 
-    // ── PARALLEL: dataFetch + seller prefs ───────────────────────────────
+    // ── STAGE 1: free agents (sync) + async data in PARALLEL ────────────
     const t0 = Date.now();
-    console.log(`[TIMING] request start → parallel fetch`);
+
+    // Detect likely intent via regex for free agents (no AI needed)
+    const likelyIntent = (() => {
+      const m = latestBuyerMessage.toLowerCase();
+      if (/refund|money back|reimburse/.test(m))             return 'refund';
+      if (/return|send back|return label/.test(m))           return 'return';
+      if (/broken|damaged|faulty|not working|defective/.test(m)) return 'damaged_item';
+      if (/cancel|cancellation|changed mind/.test(m))        return 'cancellation';
+      if (/where is|tracking|not arrived|not received|still waiting/.test(m)) return 'tracking';
+      if (/discount|cheaper|reduce|lower.{0,10}price/.test(m)) return 'discount_request';
+      return 'general';
+    })();
+
+    // conversationStateAgent — pure JS, runs instantly
+    const conversationState = conversationStateAgent({ latestBuyerMessage, threadMessages });
+
+    // dataFetch + prefRows — async, run in parallel
     const [dataFetch, prefRows] = await Promise.all([
       dataFetchAgent({ userId: user.id, needs: { order: true }, orderId: order_id || null }),
       supabase.from('seller_preferences')
@@ -154,7 +174,25 @@ router.post('/generate', requireLicense, async (req, res) => {
         .then(r => (r.data || []).map(p => p.insight))
         .catch(() => [])
     ]);
-    console.log(`[TIMING] parallel fetch done: ${Date.now()-t0}ms | orderId=${order_id||'none'} | ebay_connected=${dataFetch?.trace?.ebay_connected}`);
+
+    // profitProtectionAgent — pure JS, uses dataFetch results, instant
+    const profitProtection = profitProtectionAgent({ intent: likelyIntent, fetched: dataFetch?.fetched || {} });
+
+    // ── STAGE 2: complexityRisk — mini AI, only for complex messages ─────
+    // ~0.8s if triggered, skipped entirely for simple messages
+    let complexityRisk = null;
+    if (shouldRunComplexityRisk({ intent: likelyIntent, conversationState })) {
+      const amounts = (latestBuyerMessage.match(/[£$€]\s*\d+|\d+\s*(pound|dollar|euro)/gi) || []);
+      complexityRisk = await complexityRiskAgent({
+        intent: likelyIntent,
+        conversationState,
+        dataFetch,
+        latestBuyerMessage,
+        amountsMentioned: amounts
+      });
+      console.log(`[TIMING] complexityRisk: ${Date.now()-t0}ms | humanReview=${complexityRisk?.humanReviewRequired}`);
+    }
+    console.log(`[TIMING] pre-master done: ${Date.now()-t0}ms | tone=${conversationState.toneTrajectory} | manipulation=${conversationState.manipulationFlag}`);
 
     // ── SSE headers — open stream immediately ─────────────────────────────
     res.setHeader('Content-Type',  'text/event-stream');
@@ -179,7 +217,10 @@ router.post('/generate', requireLicense, async (req, res) => {
         isPrePurchase:      is_pre_purchase     || false,
         dataFetch,
         user,
-        sellerPrefs: prefRows,
+        sellerPrefs:        prefRows,
+        conversationState,
+        profitProtection,
+        complexityRisk,
         onChunk: (text) => sendEvent({ type: 'chunk', text })
       });
       console.log(`[TIMING] masterAgent done: ${Date.now()-tMaster}ms`);
@@ -193,9 +234,22 @@ router.post('/generate', requireLicense, async (req, res) => {
     const latency = Date.now() - startTime;
     const route   = result.why?.structured?.risk?.score >= 7 ? 'large' : 'mini';
 
+    // safetyCheckAgent — pure regex post-processing, zero latency
+    const safeChecked = safetyCheckAgent({ draft: result.reply });
+
+    // Inject complexityRisk data into why panel if available
+    if (complexityRisk?.ok && result.why?.structured) {
+      result.why.structured.humanReview          = complexityRisk.humanReviewRequired || result.why.structured.humanReview;
+      result.why.structured.humanReviewReason    = complexityRisk.humanReviewReason || null;
+      result.why.structured.legalSignals         = complexityRisk.legalJurisdictionSignals || null;
+      result.why.structured.financialExposure    = complexityRisk.estimatedFinancialExposure || null;
+      result.why.structured.resolutionOptions    = complexityRisk.resolutionOptions || [];
+      result.why.structured.sellerProtectedBy    = complexityRisk.sellerIsProtectedBy || null;
+    }
+
     sendEvent({
       type:       'done',
-      reply:      result.reply,
+      reply:      safeChecked.reply,
       intent:     result.intent,
       risk:       result.risk,
       route,
@@ -207,7 +261,7 @@ router.post('/generate', requireLicense, async (req, res) => {
 
     // Fire-and-forget
     trackUsage(user.id, route, result.tokens, result.cost).catch(() => {});
-    logReply(user.id, result.intent, route, 'gpt-4o', latestBuyerMessage, result.reply, latency, result.tokens, result.cost).catch(() => {});
+    logReply(user.id, result.intent, route, 'gpt-4o', latestBuyerMessage, safeChecked.reply, latency, result.tokens, result.cost).catch(() => {});
     supabase.from('users').update({ last_active: new Date().toISOString() }).eq('id', user.id).then(() => {});
 
   } catch (err) {
