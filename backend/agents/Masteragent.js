@@ -50,7 +50,10 @@ async function masterAgent({
   dataFetch,
   user,
   sellerPrefs,
-  onChunk   // callback(text) called for each streamed token
+  conversationState,  // from conversationStateAgent (free)
+  profitProtection,   // from profitProtectionAgent (free)
+  complexityRisk,     // from complexityRiskAgent (mini, complex only — may be null)
+  onChunk
 }) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OpenAI API key not configured');
@@ -81,6 +84,37 @@ async function masterAgent({
     ? `\nSELLER LEARNED PREFERENCES (apply these):\n${sellerPrefs.map(p => `• ${p}`).join('\n')}`
     : '';
 
+  // Conversation state block (from free conversationStateAgent)
+  const cs = conversationState || {};
+  const stateBlock = cs.messageCount > 1 ? `
+CONVERSATION INTELLIGENCE:
+• Tone trajectory: ${cs.toneTrajectory || 'stable'}${cs.toneTrajectory === 'escalating' ? ' ⚠ BUYER IS ESCALATING — acknowledge frustration first, be measured' : ''}
+• Thread length: ${cs.messageCount} messages — ${cs.isFirstContact ? 'first contact' : 'ongoing conversation'}
+• Relationship score: ${cs.relationshipScore || 1}/5${cs.relationshipScore >= 4 ? ' — warmer tone appropriate' : ''}
+${cs.sellerPreviousPromises.length ? `• Seller previously promised: ${cs.sellerPreviousPromises.join('; ')} — you MUST acknowledge or follow up on this` : ''}
+${cs.existingEbayCase ? '• ⚠ EXISTING EBAY CASE OPEN — be factual, measured, reference Resolution Centre' : ''}
+${cs.manipulationFlag ? `• ⚠ MANIPULATION DETECTED: ${cs.manipulationReason} — stay professional, do NOT be pressured` : ''}
+${cs.implicitSignals.length ? `• Implicit buyer signals: ${cs.implicitSignals.join('; ')}` : ''}` : '';
+
+  // Profit protection block (from free profitProtectionAgent)
+  const pp = profitProtection || {};
+  const profitBlock = (pp.guidance || []).length ? `
+PROFIT PROTECTION RULES (follow strictly):
+${pp.guidance.map(g => `• ${g}`).join('\n')}` : '';
+
+  // Complexity risk block (from mini AI call — only for complex messages)
+  const cr = complexityRisk || {};
+  const riskBlock = cr.ok ? `
+RISK INTELLIGENCE:
+${cr.legalJurisdictionSignals ? `• Legal: ${cr.legalJurisdictionSignals}` : ''}
+${cr.ebayAccountRisk && cr.ebayAccountRisk !== 'low' ? `• eBay account risk: ${cr.ebayAccountRisk}` : ''}
+${cr.estimatedFinancialExposure && cr.estimatedFinancialExposure !== 'unknown' ? `• Financial exposure: ${cr.estimatedFinancialExposure}` : ''}
+${cr.sellerIsProtectedBy ? `• Seller protected by: ${cr.sellerIsProtectedBy}` : ''}
+${(cr.doNotSayList || []).length ? `• NEVER say: ${cr.doNotSayList.join(', ')}` : ''}
+${(cr.mustSayList || []).length ? `• MUST include: ${cr.mustSayList.join(', ')}` : ''}
+${(cr.feedbackProtectionTips || []).length ? `• Feedback protection: ${cr.feedbackProtectionTips.join('; ')}` : ''}
+${cr.humanReviewRequired ? `• ⚠ HIGH STAKES — seller should review before sending: ${cr.humanReviewReason}` : ''}` : '';
+
   // Voice block
   const voiceBlock = voice?.traits?.length
     ? `\nSELLER WRITING VOICE — mirror exactly:\n${voice.traits.map(t => `• ${t}`).join('\n')}`
@@ -106,6 +140,9 @@ You write AS ${sign} — you ARE this person.
 Preferred tone: ${tone}
 ${voiceBlock}
 ${prefsBlock}
+${stateBlock}
+${profitBlock}
+${riskBlock}
 
 ━━━ YOUR TASK ━━━
 Read the buyer's message carefully. Then write the perfect reply.
