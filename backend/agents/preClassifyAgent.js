@@ -1,6 +1,6 @@
 // agents/preClassifyAgent.js — ReplyMate Pro v5.0
 // CALL 1 — Agent 0 (Pre-Processor) + Agent 1 (Classifier) combined
-// Model: GPT-4o  |  One API call returns conversation state AND full classification.
+// Model: GPT-4o-mini  |  One API call returns conversation state AND full classification.
 // This is the pipeline's foundation — everything downstream inherits its decisions.
 
 const { callOpenAIJSON } = require('./writerModels');
@@ -93,7 +93,7 @@ Analyse everything above and return this exact JSON — no extra keys, no deviat
 }`;
 
   try {
-    const result = await callOpenAIJSON(SYSTEM_PROMPT, userPrompt, 'gpt-4o', 1200);
+    const result = await callOpenAIJSON(SYSTEM_PROMPT, userPrompt, 'gpt-4o-mini', 700);
     return {
       ok:                true,
       conversationState: result.parsed.conversationState,
