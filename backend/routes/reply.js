@@ -222,7 +222,8 @@ router.post('/generate', requireLicense, async (req, res) => {
       modify_instructions,
       order_id,
       product_title,
-      product_description
+      product_description,
+      is_pre_purchase
     } = req.body;
 
     const threadMessages = Array.isArray(thread_messages) ? thread_messages : [];
@@ -358,6 +359,21 @@ router.post('/generate', requireLicense, async (req, res) => {
     // Inject learned seller preferences
     if (prefRows.length > 0)
       risk.constraints = [...(risk.constraints || []), ...prefRows.map(p => p.insight)];
+
+    // ── Pre-purchase hard constraints ─────────────────────────────────────
+    // If there is no order ID on the page, this is a potential buyer enquiry.
+    // The writer must NEVER reference orders, tracking, or ask for feedback.
+    if (is_pre_purchase) {
+      risk.constraints = [
+        'This is a PRE-PURCHASE enquiry — the buyer has NOT ordered yet',
+        'NEVER mention orders, tracking numbers, or delivery status',
+        'NEVER ask for feedback or reviews — no order has been placed',
+        'NEVER say "your order" — there is no order',
+        'Treat this as a potential customer who may be deciding whether to buy',
+        'Be helpful, answer their question, and make them feel confident about purchasing',
+        ...(risk.constraints || [])
+      ];
+    }
 
     // ════════════════════════════════════════════════════════════════════
     // CALL 3 — Agent 5 (Reasoning / Strategy Brief) — GPT-4o
