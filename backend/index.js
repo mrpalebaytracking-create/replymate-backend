@@ -29,7 +29,7 @@ app.use('/stripe/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ReplyMate Pro API running', version: '1.2.0', time: new Date().toISOString() });
+  res.json({ status: 'ReplyMate Pro API running', version: '6.0.0-streaming', time: new Date().toISOString() });
 });
 
 // ── Routes ────────────────────────────────────────────────────────────────
@@ -41,9 +41,19 @@ app.use('/admin',    require('./routes/admin'));
 app.use('/customer', require('./routes/customer'));
 app.use('/ebay',     require('./routes/ebay'));
 app.use('/reply',    require('./routes/reply'));
+app.use('/feedback', require('./routes/feedback'));
 
 app.use((req, res) => { res.status(404).json({ error: 'Route not found' }); });
 app.use((err, req, res, next) => { console.error('Server error:', err); res.status(500).json({ error: 'Internal server error' }); });
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`✦ ReplyMate Pro API running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✦ ReplyMate Pro API running on port ${PORT}`);
+  // Start feedback agent poller (every 3 hours)
+  try {
+    const { startFeedbackPoller } = require('./lib/feedbackPoller');
+    startFeedbackPoller();
+  } catch (err) {
+    console.error('[startup] feedbackPoller failed to start:', err.message);
+  }
+});
