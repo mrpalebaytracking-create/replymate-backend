@@ -1,0 +1,105 @@
+// agents/conversationStateAgent.js — ReplyMate Pro v8.1
+// Pure JavaScript — zero AI calls, zero latency.
+// Analyses thread messages to extract conversation state that masterAgent
+// would otherwise miss or have to infer weakly.
+
+function conversationStateAgent({ latestBuyerMessage, threadMessages }) {
+  const thread = Array.isArray(threadMessages) ? threadMessages : [];
+  const allText = thread.map(m => (m.text || '').toLowerCase()).join(' ');
+  const buyerMessages  = thread.filter(m => (m.role || '').toLowerCase() === 'buyer');
+  const sellerMessages = thread.filter(m => (m.role || '').toLowerCase() === 'seller');
+  const latestLower    = (latestBuyerMessage || '').toLowerCase();
+
+  // ── Tone trajectory ───────────────────────────────────────────────────
+  const escalationWords = /\b(unacceptable|disgusting|terrible|awful|ridiculous|joke|scam|fraud|useless|worst|never again|report|trading standards|solicitor|lawyer|court|chargeback|paypal dispute|leaving negative|bad feedback|1 star|stay away)\b/;
+  const deEscalationWords = /\b(thank you|thanks|appreciate|sorted|resolved|happy|all good|no worries|understood|fair enough)\b/;
+
+  let escalatingCount = 0;
+  let deEscalatingCount = 0;
+  for (const m of buyerMessages) {
+    const t = (m.text || '').toLowerCase();
+    if (escalationWords.test(t)) escalatingCount++;
+    if (deEscalationWords.test(t)) deEscalatingCount++;
+  }
+  const toneTrajectory =
+    escalatingCount >= 2                           ? 'escalating' :
+    escalationWords.test(latestLower)              ? 'escalating' :
+    deEscalatingCount > escalatingCount            ? 'de-escalating' :
+                                                     'stable';
+
+  // ── Seller previous promises ──────────────────────────────────────────
+  const sellerPreviousPromises = [];
+  const promisePatterns = [
+    { re: /\b(will dispatch|dispatching|sending).{0,30}(today|tomorrow|monday|tuesday|wednesday|thursday|friday|this week)/i, label: 'promised to dispatch by specific day' },
+    { re: /\b(will refund|refunding|send.{0,10}refund|process.{0,10}refund)/i,                                               label: 'offered or promised refund' },
+    { re: /\b(will replace|sending.{0,10}replacement|replacement.{0,10}on.{0,10}way)/i,                                      label: 'promised replacement item' },
+    { re: /\b(will look into|looking into|investigating|will chase|chasing)/i,                                                label: 'promised to investigate' },
+    { re: /\b(will contact.{0,20}(courier|royal mail|hermes|evri|dpd|ups|fedex))/i,                                          label: 'promised to contact courier' },
+    { re: /\b(should arrive|will arrive|expected.{0,20}(today|tomorrow|this week|by \w+day))/i,                              label: 'gave delivery estimate' },
+  ];
+  for (const m of sellerMessages) {
+    for (const { re, label } of promisePatterns) {
+      if (re.test(m.text || '') && !sellerPreviousPromises.includes(label)) {
+        sellerPreviousPromises.push(label);
+      }
+    }
+  }
+
+  // ── Existing eBay case ────────────────────────────────────────────────
+  const existingEbayCase = /\b(opened.{0,20}case|ebay case|resolution centre|item not received case|case number|escalated|ebay stepped in|ebay found|ebay decided)\b/i.test(allText);
+
+  // ── Manipulation detection ────────────────────────────────────────────
+  const manipulationPatterns = [
+    { re: /\b(leave.{0,20}(negative|bad|1 star).{0,20}(feedback|review)|negative feedback.{0,20}unless)\b/i,     tactic: 'feedback threat to coerce resolution' },
+    { re: /\b(trading standards|consumer rights|solicitor|small claims|sue you|legal action|court)\b/i,           tactic: 'legal threat to create pressure' },
+    { re: /\b(if you.{0,30}(don.t|wont|refuse).{0,30}(refund|replace|resolve))\b/i,                              tactic: 'conditional threat ultimatum' },
+    { re: /\b(my friend.{0,30}(same|also|similar)|everyone.{0,20}(saying|knows|thinks))\b/i,                     tactic: 'social proof manipulation' },
+    { re: /\b(bought.{0,20}many.{0,20}(times|orders)|good customer|loyal|always.{0,20}buy)\b/i,                  tactic: 'loyalty leverage for special treatment' },
+    { re: /\b(really needed.{0,30}(wedding|birthday|christmas|gift|present|urgent|hospital))\b/i,                 tactic: 'emotional urgency to accelerate resolution' },
+  ];
+  let manipulationFlag   = false;
+  let manipulationReason = null;
+  for (const { re, tactic } of manipulationPatterns) {
+    if (re.test(latestLower) || re.test(allText)) {
+      manipulationFlag   = true;
+      manipulationReason = tactic;
+      break;
+    }
+  }
+
+  // ── Relationship score 1-5 ────────────────────────────────────────────
+  const totalMessages    = thread.length + 1;
+  const hasWarmLanguage  = deEscalationWords.test(allText);
+  const relationshipScore =
+    totalMessages <= 1                          ? 1 :
+    totalMessages <= 2 && !hasWarmLanguage      ? 2 :
+    totalMessages <= 4                          ? 3 :
+    totalMessages <= 7 && hasWarmLanguage       ? 4 :
+                                                  5;
+
+  // ── Implicit signals in latest message ───────────────────────────────
+  const implicitSignals = [];
+  if (/\b(still|yet|again|weeks?|days?)\b/.test(latestLower) && /\b(waiting|haven.t|not received|no update)\b/.test(latestLower))
+    implicitSignals.push('implies frustration from extended wait time');
+  if (/\?/.test(latestBuyerMessage) && buyerMessages.length > 1 && /\?/.test((buyerMessages[buyerMessages.length - 2]?.text || '')))
+    implicitSignals.push('buyer has asked questions before — may escalate if unanswered again');
+  if (escalationWords.test(latestLower))
+    implicitSignals.push('explicit language signals risk of escalation to case or negative feedback');
+  if (/\b(quick|quickly|urgent|asap|today|immediately|right now)\b/.test(latestLower))
+    implicitSignals.push('buyer signalling urgency — slow response may escalate');
+
+  return {
+    messageCount:           totalMessages,
+    isFirstContact:         thread.length === 0,
+    toneTrajectory,
+    sellerPreviousPromises,
+    existingEbayCase,
+    manipulationFlag,
+    manipulationReason,
+    relationshipScore,
+    implicitSignals,
+    previousIntents:        [] // not computed without AI — masterAgent infers from thread
+  };
+}
+
+module.exports = { conversationStateAgent };
