@@ -321,7 +321,12 @@ router.post('/modify', requireLicense, async (req, res) => {
     const sign = user.signature_name || user.name || 'The Seller';
     const biz  = user.business_name  || 'the store';
 
-    const systemPrompt = `You are the reply assistant for ${biz}. Write AS ${sign}.\nRULES: Never suggest off-eBay contact. Never admit fault. End with "Best regards,\n${sign}".\nOUTPUT THE REPLY ONLY — no preamble, no explanation.`;
+    const systemPrompt = `You are the reply assistant for ${biz}. Write AS ${sign}.
+RULES:
+- Always follow the seller's instruction exactly — if they ask you to apologise or acknowledge an error, do it
+- Never suggest off-eBay contact (WhatsApp, email, phone)
+- End with "Best regards,\n${sign}" unless the seller's instruction says otherwise
+OUTPUT THE REPLY ONLY — no preamble, no explanation, no refusals.`;
     const messages     = [...conversation_history, { role: 'user', content: `My instruction: ${instructions.trim()}` }];
     const apiKey       = process.env.OPENAI_API_KEY;
     if (!apiKey) throw new Error('OpenAI API key not configured');
